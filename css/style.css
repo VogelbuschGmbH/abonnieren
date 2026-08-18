@@ -1,0 +1,21 @@
+.abonnieren-content { padding: 20px; }
+.abonnieren-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 18px; }
+.abonnieren-heading h1 { font-size: 24px; margin: 0 0 4px; }
+.abonnieren-heading p { color: var(--color-text-maxcontrast); }
+.abonnieren-table-scroll { overflow-x: auto; }
+.abonnieren-table { width: 100%; border-collapse: collapse; }
+.abonnieren-table th,
+.abonnieren-table td { padding: 10px; border-bottom: 1px solid var(--color-border); text-align: center; }
+.abonnieren-table th:first-child,
+.abonnieren-table td:first-child { text-align: left; min-width: 280px; }
+.abonnieren-table td:first-child a { display: grid; grid-template-columns: 24px 1fr; color: var(--color-main-text); }
+.abonnieren-table td:first-child a::before { grid-row: 1 / 3; align-self: center; }
+.abonnieren-table td:first-child strong,
+.abonnieren-table td:first-child small { grid-column: 2; overflow-wrap: anywhere; }
+.abonnieren-table td:first-child small { color: var(--color-text-maxcontrast); }
+.abonnieren-row-actions { white-space: nowrap; }
+.abonnieren-row-actions button { margin: 2px; }
+.abonnieren-empty-state { padding: 32px !important; text-align: center !important; color: var(--color-text-maxcontrast); }
+#subscriptions-feedback { min-height: 24px; }
+#subscriptions-feedback.success { color: var(--color-success); }
+#subscriptions-feedback.error { color: var(--color-error); }

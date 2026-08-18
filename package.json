@@ -1,0 +1,49 @@
+{
+  "name": "abonnieren",
+  "version": "1.0.3",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "node": "^20.0.0",
+    "npm": "^10.0.0"
+  },
+  "scripts": {
+    "build": "NODE_ENV=production webpack --config webpack.js --progress",
+    "dev": "NODE_ENV=development webpack --config webpack.js --progress",
+    "watch": "NODE_ENV=development webpack --config webpack.js --progress --watch",
+    "lint": "eslint src",
+    "stylelint": "stylelint src/**/*.vue src/**/*.scss src/**/*.css",
+    "postinstall": "node -e \"const p=require('path');const fs=require('fs');const cp=require('child_process');const pnpmDir=p.join(process.cwd(),'node_modules','.pnpm');if(!fs.existsSync(pnpmDir)){console.warn('[abonnieren] .pnpm folder not found; skipping vue-demi switch');process.exit(0);}const match=fs.readdirSync(pnpmDir).find((d)=>d.startsWith('vue-demi@'));if(!match){console.warn('[abonnieren] vue-demi package not found; skipping switch');process.exit(0);}const sw=p.join(pnpmDir,match,'node_modules','vue-demi','bin','vue-demi-switch.js');if(!fs.existsSync(sw)){console.warn('[abonnieren] vue-demi switch script not found');process.exit(0);}cp.execFileSync(process.execPath,[sw,'2.7'],{stdio:'inherit'});\""
+  },
+  "browserslist": [
+    "extends @nextcloud/browserslist-config"
+  ],
+  "dependencies": {
+    "@nextcloud/files": "^4.0.0",
+    "@nextcloud/l10n": "^3.2.0",
+    "@nextcloud/vue": "8.37.0",
+    "vue": "2.7.16"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@nextcloud/browserslist-config": "^3.0.1",
+    "@nextcloud/eslint-config": "^8.3.0",
+    "@nextcloud/stylelint-config": "^2.4.0",
+    "@nextcloud/webpack-vue-config": "^6.0.1",
+    "babel-loader": "^10.0.0",
+    "css-loader": "^7.1.1",
+    "eslint-webpack-plugin": "^4.1.0",
+    "node-polyfill-webpack-plugin": "^4.0.0",
+    "sass": "^1.64.2",
+    "sass-loader": "^16.0.2",
+    "style-loader": "^4.0.0",
+    "stylelint-webpack-plugin": "^5.0.0",
+    "vue-loader": "^15.11.1",
+    "webpack": "^5.88.2",
+    "webpack-cli": "^6.0.1"
+  },
+  "pnpm": {
+    "overrides": {
+      "vue-demi": "0.14.10"
+    }
+  }
+}

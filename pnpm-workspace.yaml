@@ -1,0 +1,12 @@
+packages:
+  - .
+
+allowBuilds:
+  '@nextcloud/webpack-vue-config': set this to true or false
+  '@parcel/watcher': set this to true or false
+  core-js: set this to true or false
+  unrs-resolver: set this to true or false
+  vue-demi: set this to true or false
+
+overrides:
+  vue-demi: 0.14.10

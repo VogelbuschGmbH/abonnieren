@@ -1,0 +1,12 @@
+.abonnieren-subscription-tab { padding: 16px; }
+.abonnieren-subscription-tab h3 { margin: 0 0 8px; font-size: 18px; }
+.abonnieren-subscription-description { margin-bottom: 18px; color: var(--color-text-maxcontrast); }
+.abonnieren-subscription-option { display: flex; align-items: center; gap: 10px; min-height: 40px; cursor: pointer; }
+.abonnieren-subscription-option input { width: 20px; height: 20px; }
+.abonnieren-subscription-separator { margin: 12px 0; border: 0; border-top: 1px solid var(--color-border); }
+.abonnieren-subscription-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }
+.abonnieren-subscription-feedback { min-height: 22px; margin: 10px 0 0; }
+.abonnieren-subscription-feedback.success { color: var(--color-success); }
+.abonnieren-subscription-feedback.error,
+.abonnieren-subscription-error { color: var(--color-error); }
+.abonnieren-subscription-state { color: var(--color-text-maxcontrast); }
