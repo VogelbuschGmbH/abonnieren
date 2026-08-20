@@ -2,6 +2,10 @@
 
 Abonnieren is a Nextcloud 34 app for object-based email subscriptions. A user can subscribe to an individual file or folder and select notifications for download, upload, modification and deletion. Folder subscriptions can optionally include descendants.
 
+## Demo
+
+![Creating a Nextcloud share from Windows Explorer](abonnieren-demo.gif)
+
 ## Features
 
 - Files sidebar tab **Subscribe**
