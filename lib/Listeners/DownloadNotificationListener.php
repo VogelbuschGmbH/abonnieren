@@ -82,7 +82,7 @@ class DownloadNotificationListener implements IEventListener {
 
 	private function handleFileDownload(BeforeNodeReadEvent $event): void {
 		$node = $event->getNode();
-		if (!$node instanceof File) {
+		if (!$node instanceof File || !$this->isExplicitDownloadRequest()) {
 			return;
 		}
 
@@ -97,25 +97,62 @@ class DownloadNotificationListener implements IEventListener {
 			return;
 		}
 
-		// Avoid repeated emails for browser/video range requests in the same
-		// share or authenticated session. The remote address is hashed into the
+		// One email per visitor and file. The remote address is hashed into the
 		// key and is never stored or included in the message.
-		$accessKey = $share !== null
-			? 'share:' . (string)$share->getId()
-			: 'user:' . $user->getUID();
-		$visitorKey = hash('sha256', implode('|', [
+		$accessKey = $user !== null
+			? 'user:' . $user->getUID()
+			: 'share:' . (string)($share?->getId() ?? 'anon');
+		$cacheKey = 'download:' . hash('sha256', implode('|', [
 			$accessKey,
 			(string)$node->getId(),
 			$this->session->getId(),
 			$this->request->getRemoteAddress(),
 		]));
-		$cacheKey = 'range:' . $visitorKey;
-		if ($this->request->getHeader('range') !== '' && $this->cache->get($cacheKey) === 'true') {
+		if ($this->cache->get($cacheKey) === 'true') {
 			return;
 		}
 		$this->cache->set($cacheKey, 'true', 3600);
 
 		$this->notify($share, $node, $this->resolveSubscriptionNode($node, $share));
+	}
+
+	/**
+	 * BeforeNodeReadEvent also fires for Viewer, Text, previews and media
+	 * playback. Those are not downloads. The Files download action uses DAV
+	 * HEAD (ignored here) followed by a plain GET from an <a download> click.
+	 */
+	private function isExplicitDownloadRequest(): bool {
+		if (strtoupper($this->request->getMethod()) !== 'GET') {
+			return false;
+		}
+
+		$uri = strtolower($this->request->getRequestUri());
+		if (preg_match('#/(core/preview|apps/files/api/v1/(preview|thumbnail)|apps/files/thumbnail|/wopi/)#', $uri) === 1) {
+			return false;
+		}
+
+		if ($this->request->getHeader('range') !== '') {
+			return false;
+		}
+
+		$dest = strtolower($this->request->getHeader('sec-fetch-dest'));
+		if (in_array($dest, ['image', 'video', 'audio', 'media', 'iframe', 'embed', 'object', 'script', 'style', 'font'], true)) {
+			return false;
+		}
+
+		$mode = strtolower($this->request->getHeader('sec-fetch-mode'));
+		if ($mode === 'cors' || $mode === 'same-origin') {
+			return false;
+		}
+
+		if (strtolower($this->request->getHeader('x-requested-with')) === 'xmlhttprequest') {
+			return false;
+		}
+		if ($this->request->getHeader('requesttoken') !== '') {
+			return false;
+		}
+
+		return true;
 	}
 
 	private function getShare(Node $node): ?IShare {
