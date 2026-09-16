@@ -20,6 +20,13 @@ use OCP\Share\IShare;
  * @psalm-suppress UnusedClass
  */
 class ApiController extends OCSController {
+	/** @var list<int> */
+	private const SUPPORTED_SHARE_TYPES = [
+		IShare::TYPE_USER,
+		IShare::TYPE_GROUP,
+		IShare::TYPE_LINK,
+	];
+
 	public function __construct(
 		string $appName,
 		IRequest $request,
@@ -31,11 +38,11 @@ class ApiController extends OCSController {
 	}
 
 	/**
-	 * Enable email notifications for downloads through one public link share.
+	 * Enable email notifications for downloads through one user, group or public link share.
 	 *
 	 * The authenticated user is derived from the app-password session. The
 	 * supplied share ID is accepted only when it belongs to that user and is a
-	 * public link share.
+	 * user, group or public link share.
 	 */
 	#[NoAdminRequired]
 	#[ApiRoute(verb: 'POST', url: '/api/v1/download-notifications')]
@@ -44,7 +51,7 @@ class ApiController extends OCSController {
 	}
 
 	/**
-	 * Enable selected email notifications for one public link share.
+	 * Enable selected email notifications for one user, group or public link share.
 	 *
 	 * Event mask: upload=1, modification=2, deletion=4, download=8.
 	 */
@@ -69,8 +76,8 @@ class ApiController extends OCSController {
 			return new DataResponse(['enabled' => false, 'message' => 'Share not found'], Http::STATUS_NOT_FOUND);
 		}
 
-		if ($share->getShareType() !== IShare::TYPE_LINK) {
-			return new DataResponse(['enabled' => false, 'message' => 'Only public link shares are supported'], Http::STATUS_BAD_REQUEST);
+		if (!in_array($share->getShareType(), self::SUPPORTED_SHARE_TYPES, true)) {
+			return new DataResponse(['enabled' => false, 'message' => 'Only user, group and public link shares are supported'], Http::STATUS_BAD_REQUEST);
 		}
 
 		if ($share->getSharedBy() !== $user->getUID()) {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.4 - 2026-09-16
+
+### Added
+
+- OCS share-notification endpoints accept user and group shares in addition to
+  public link shares, so internal shares can enable the same object rules.
+
 ## 1.0.3 - 2026-08-17
 
 ### Changed

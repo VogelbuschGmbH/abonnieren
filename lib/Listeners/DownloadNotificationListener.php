@@ -71,8 +71,8 @@ class DownloadNotificationListener implements IEventListener {
 			return;
 		}
 
-		$share = $this->getPublicLinkShare($folder);
-		if ($share === null && $this->userSession->getUser() === null) {
+		$share = $this->getShare($folder);
+		if (!$this->isPublicLinkShare($share) && $this->userSession->getUser() === null) {
 			return;
 		}
 
@@ -86,9 +86,9 @@ class DownloadNotificationListener implements IEventListener {
 			return;
 		}
 
-		$share = $this->getPublicLinkShare($node);
+		$share = $this->getShare($node);
 		$user = $this->userSession->getUser();
-		if ($share === null && $user === null) {
+		if (!$this->isPublicLinkShare($share) && $user === null) {
 			return;
 		}
 
@@ -98,8 +98,8 @@ class DownloadNotificationListener implements IEventListener {
 		}
 
 		// Avoid repeated emails for browser/video range requests in the same
-		// public-link session. The remote address is hashed into the key and is
-		// never stored or included in the message.
+		// share or authenticated session. The remote address is hashed into the
+		// key and is never stored or included in the message.
 		$accessKey = $share !== null
 			? 'share:' . (string)$share->getId()
 			: 'user:' . $user->getUID();
@@ -118,7 +118,7 @@ class DownloadNotificationListener implements IEventListener {
 		$this->notify($share, $node, $this->resolveSubscriptionNode($node, $share));
 	}
 
-	private function getPublicLinkShare(Node $node): ?IShare {
+	private function getShare(Node $node): ?IShare {
 		try {
 			$storage = $node->getStorage();
 		} catch (NotFoundException $e) {
@@ -130,8 +130,11 @@ class DownloadNotificationListener implements IEventListener {
 		}
 
 		/** @var ISharedStorage $storage */
-		$share = $storage->getShare();
-		return $share->getShareType() === IShare::TYPE_LINK ? $share : null;
+		return $storage->getShare();
+	}
+
+	private function isPublicLinkShare(?IShare $share): bool {
+		return $share !== null && $share->getShareType() === IShare::TYPE_LINK;
 	}
 
 	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode): void {
@@ -146,7 +149,7 @@ class DownloadNotificationListener implements IEventListener {
 
 		try {
 			$isFolder = $node instanceof Folder;
-			$isPublicLink = $share !== null;
+			$isPublicLink = $this->isPublicLinkShare($share);
 			$subject = $isFolder
 				? ($isPublicLink
 					? $this->l10n->t('Public share folder downloaded')
@@ -178,7 +181,7 @@ class DownloadNotificationListener implements IEventListener {
 			$template->addBodyListItem($this->l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
 
 			$token = $share?->getToken();
-			if ($share !== null && is_string($token) && $token !== '') {
+			if ($isPublicLink && is_string($token) && $token !== '') {
 				$template->addBodyButton(
 					$this->l10n->t('Open public share'),
 					$this->urlGenerator->linkToRouteAbsolute(

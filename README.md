@@ -15,7 +15,7 @@ Abonnieren is a Nextcloud 34 app for object-based email subscriptions. A user ca
 - Optional recursive folder rules
 - Suppression of the subscriber's own authenticated actions
 - Deduplication of overlapping direct and recursive rules
-- Public-link downloads, uploads, modifications and deletions
+- User, group and public-link downloads, uploads, modifications and deletions
 - Complete folder ZIP download notifications
 - OCS endpoint for trusted clients such as NextcloudShare
 
@@ -32,7 +32,7 @@ Parameters:
 - `shareId`: numeric OCS share ID
 - `eventMask`: value from `1` through `15`
 
-Authentication uses the user's normal Nextcloud app password. The app verifies that the public link belongs to that user, resolves its shared node and creates or replaces the corresponding object-wide rule. The share ID is not stored in the rule.
+Authentication uses the user's normal Nextcloud app password. The app verifies that the user, group or public link share belongs to that user, resolves its shared node and creates or replaces the corresponding object-wide rule. The share ID is not stored in the rule.
 
 ## Development
 
