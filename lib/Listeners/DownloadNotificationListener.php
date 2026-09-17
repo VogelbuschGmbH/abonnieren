@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OCA\Abonnieren\Listeners;
 
+use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\EventDispatcher\Event;
 use OCP\EventDispatcher\IEventListener;
@@ -42,6 +43,7 @@ class DownloadNotificationListener implements IEventListener {
 		private IURLGenerator $urlGenerator,
 		private ISession $session,
 		private IRequest $request,
+		private ActivityPublisher $activityPublisher,
 		ICacheFactory $cacheFactory,
 	) {
 		$this->cache = $cacheFactory->createDistributed('abonnieren_download_notifications');
@@ -77,7 +79,9 @@ class DownloadNotificationListener implements IEventListener {
 		}
 
 		$this->cache->set('request:' . $this->request->getId(), $folder->getPath(), 3600);
-		$this->notify($share, $folder, $this->resolveSubscriptionNode($folder, $share));
+		$subscriptionNode = $this->resolveSubscriptionNode($folder, $share);
+		$this->activityPublisher->publishDownload($share, $subscriptionNode);
+		$this->notify($share, $folder, $subscriptionNode);
 	}
 
 	private function handleFileDownload(BeforeNodeReadEvent $event): void {
@@ -113,7 +117,9 @@ class DownloadNotificationListener implements IEventListener {
 		}
 		$this->cache->set($cacheKey, 'true', 3600);
 
-		$this->notify($share, $node, $this->resolveSubscriptionNode($node, $share));
+		$subscriptionNode = $this->resolveSubscriptionNode($node, $share);
+		$this->activityPublisher->publishDownload($share, $subscriptionNode);
+		$this->notify($share, $node, $subscriptionNode);
 	}
 
 	/**

@@ -16,6 +16,8 @@ Abonnieren is a Nextcloud 34 app for object-based email subscriptions. A user ca
 - Suppression of the subscriber's own authenticated actions
 - Deduplication of overlapping direct and recursive rules
 - User, group and public-link downloads, uploads, modifications and deletions
+- Activity feed entries when another user downloads a file or folder, visible
+  to the owner, the sharer and administrators
 - Complete folder ZIP download notifications
 - OCS endpoint for trusted clients such as NextcloudShare
 

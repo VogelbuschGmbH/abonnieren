@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.5 - 2026-09-17
+
+### Added
+
+- Record a Files activity entry on the downloaded file or folder when another
+  user downloads it. The file owner, the sharer and members of the admin
+  group receive the entry. Public link downloads stay with the existing
+  sharing activity so they are not listed twice.
+
 ## 1.0.4 - 2026-09-16
 
 ### Added
