@@ -1,6 +1,10 @@
 OC.L10N.register(
 	'abonnieren',
 		{
+	  "A file or folder was downloaded": "Eine Datei oder ein Ordner wurde heruntergeladen",
+	  "Downloaded by {user}": "Heruntergeladen von {user}",
+	  "You downloaded {file}": "Sie haben {file} heruntergeladen",
+	  "{user} downloaded {file}": "{user} hat {file} heruntergeladen",
 	  "Public share folder downloaded": "Freigabeordner heruntergeladen",
 	  "Public share file downloaded": "Datei über Freigabelink heruntergeladen",
 	  "Folder downloaded": "Ordner heruntergeladen",

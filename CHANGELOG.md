@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.5 - 2026-09-17
+
+### Added
+
+- Record a Files activity entry on the downloaded file or folder when another
+  user downloads it. The file owner, the sharer and members of the admin
+  group receive the entry. Public link downloads stay with the existing
+  sharing activity so they are not listed twice.
+
+## 1.0.4 - 2026-09-16
+
+### Added
+
+- OCS share-notification endpoints accept user and group shares in addition to
+  public link shares, so internal shares can enable the same object rules.
+
+### Fixed
+
+- Send a single download email when a shared file is actually downloaded.
+  Opening the file in the Viewer, previews and media playback are ignored.
+  The Files menu still probes with DAV HEAD before GET; that probe is not a
+  download either.
+
 ## 1.0.3 - 2026-08-17
 
 ### Changed

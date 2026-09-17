@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OCA\Abonnieren\Listeners;
 
+use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\EventDispatcher\Event;
 use OCP\EventDispatcher\IEventListener;
@@ -42,6 +43,7 @@ class DownloadNotificationListener implements IEventListener {
 		private IURLGenerator $urlGenerator,
 		private ISession $session,
 		private IRequest $request,
+		private ActivityPublisher $activityPublisher,
 		ICacheFactory $cacheFactory,
 	) {
 		$this->cache = $cacheFactory->createDistributed('abonnieren_download_notifications');
@@ -71,24 +73,26 @@ class DownloadNotificationListener implements IEventListener {
 			return;
 		}
 
-		$share = $this->getPublicLinkShare($folder);
-		if ($share === null && $this->userSession->getUser() === null) {
+		$share = $this->getShare($folder);
+		if (!$this->isPublicLinkShare($share) && $this->userSession->getUser() === null) {
 			return;
 		}
 
 		$this->cache->set('request:' . $this->request->getId(), $folder->getPath(), 3600);
-		$this->notify($share, $folder, $this->resolveSubscriptionNode($folder, $share));
+		$subscriptionNode = $this->resolveSubscriptionNode($folder, $share);
+		$this->activityPublisher->publishDownload($share, $subscriptionNode);
+		$this->notify($share, $folder, $subscriptionNode);
 	}
 
 	private function handleFileDownload(BeforeNodeReadEvent $event): void {
 		$node = $event->getNode();
-		if (!$node instanceof File) {
+		if (!$node instanceof File || !$this->isExplicitDownloadRequest()) {
 			return;
 		}
 
-		$share = $this->getPublicLinkShare($node);
+		$share = $this->getShare($node);
 		$user = $this->userSession->getUser();
-		if ($share === null && $user === null) {
+		if (!$this->isPublicLinkShare($share) && $user === null) {
 			return;
 		}
 
@@ -97,28 +101,67 @@ class DownloadNotificationListener implements IEventListener {
 			return;
 		}
 
-		// Avoid repeated emails for browser/video range requests in the same
-		// public-link session. The remote address is hashed into the key and is
-		// never stored or included in the message.
-		$accessKey = $share !== null
-			? 'share:' . (string)$share->getId()
-			: 'user:' . $user->getUID();
-		$visitorKey = hash('sha256', implode('|', [
+		// One email per visitor and file. The remote address is hashed into the
+		// key and is never stored or included in the message.
+		$accessKey = $user !== null
+			? 'user:' . $user->getUID()
+			: 'share:' . (string)($share?->getId() ?? 'anon');
+		$cacheKey = 'download:' . hash('sha256', implode('|', [
 			$accessKey,
 			(string)$node->getId(),
 			$this->session->getId(),
 			$this->request->getRemoteAddress(),
 		]));
-		$cacheKey = 'range:' . $visitorKey;
-		if ($this->request->getHeader('range') !== '' && $this->cache->get($cacheKey) === 'true') {
+		if ($this->cache->get($cacheKey) === 'true') {
 			return;
 		}
 		$this->cache->set($cacheKey, 'true', 3600);
 
-		$this->notify($share, $node, $this->resolveSubscriptionNode($node, $share));
+		$subscriptionNode = $this->resolveSubscriptionNode($node, $share);
+		$this->activityPublisher->publishDownload($share, $subscriptionNode);
+		$this->notify($share, $node, $subscriptionNode);
 	}
 
-	private function getPublicLinkShare(Node $node): ?IShare {
+	/**
+	 * BeforeNodeReadEvent also fires for Viewer, Text, previews and media
+	 * playback. Those are not downloads. The Files download action uses DAV
+	 * HEAD (ignored here) followed by a plain GET from an <a download> click.
+	 */
+	private function isExplicitDownloadRequest(): bool {
+		if (strtoupper($this->request->getMethod()) !== 'GET') {
+			return false;
+		}
+
+		$uri = strtolower($this->request->getRequestUri());
+		if (preg_match('#/(core/preview|apps/files/api/v1/(preview|thumbnail)|apps/files/thumbnail|/wopi/)#', $uri) === 1) {
+			return false;
+		}
+
+		if ($this->request->getHeader('range') !== '') {
+			return false;
+		}
+
+		$dest = strtolower($this->request->getHeader('sec-fetch-dest'));
+		if (in_array($dest, ['image', 'video', 'audio', 'media', 'iframe', 'embed', 'object', 'script', 'style', 'font'], true)) {
+			return false;
+		}
+
+		$mode = strtolower($this->request->getHeader('sec-fetch-mode'));
+		if ($mode === 'cors' || $mode === 'same-origin') {
+			return false;
+		}
+
+		if (strtolower($this->request->getHeader('x-requested-with')) === 'xmlhttprequest') {
+			return false;
+		}
+		if ($this->request->getHeader('requesttoken') !== '') {
+			return false;
+		}
+
+		return true;
+	}
+
+	private function getShare(Node $node): ?IShare {
 		try {
 			$storage = $node->getStorage();
 		} catch (NotFoundException $e) {
@@ -130,8 +173,11 @@ class DownloadNotificationListener implements IEventListener {
 		}
 
 		/** @var ISharedStorage $storage */
-		$share = $storage->getShare();
-		return $share->getShareType() === IShare::TYPE_LINK ? $share : null;
+		return $storage->getShare();
+	}
+
+	private function isPublicLinkShare(?IShare $share): bool {
+		return $share !== null && $share->getShareType() === IShare::TYPE_LINK;
 	}
 
 	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode): void {
@@ -146,7 +192,7 @@ class DownloadNotificationListener implements IEventListener {
 
 		try {
 			$isFolder = $node instanceof Folder;
-			$isPublicLink = $share !== null;
+			$isPublicLink = $this->isPublicLinkShare($share);
 			$subject = $isFolder
 				? ($isPublicLink
 					? $this->l10n->t('Public share folder downloaded')
@@ -178,7 +224,7 @@ class DownloadNotificationListener implements IEventListener {
 			$template->addBodyListItem($this->l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
 
 			$token = $share?->getToken();
-			if ($share !== null && is_string($token) && $token !== '') {
+			if ($isPublicLink && is_string($token) && $token !== '') {
 				$template->addBodyButton(
 					$this->l10n->t('Open public share'),
 					$this->urlGenerator->linkToRouteAbsolute(
