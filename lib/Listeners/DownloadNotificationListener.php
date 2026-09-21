@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OCA\Abonnieren\Listeners;
 
 use OCA\Abonnieren\Activity\ActivityPublisher;
+use OCA\Abonnieren\Service\RecipientL10N;
 use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
@@ -33,7 +34,7 @@ class DownloadNotificationListener implements IEventListener {
 
 	public function __construct(
 		private IMailer $mailer,
-		private IL10N $l10n,
+		private RecipientL10N $recipientL10n,
 		private LoggerInterface $logger,
 		private SubscriptionService $subscriptionService,
 		private IUserSession $userSession,
@@ -157,11 +158,11 @@ class DownloadNotificationListener implements IEventListener {
 	}
 
 	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode): void {
-		$recipients = array_values($this->subscriptionService->getRecipientEmailsForNode(
+		$recipients = $this->subscriptionService->getRecipientEmailsForNode(
 			$subscriptionNode,
 			SubscriptionService::EVENT_DOWNLOAD,
 			$this->userSession->getUser()?->getUID(),
-		));
+		);
 		if ($recipients === []) {
 			return;
 		}
@@ -169,65 +170,67 @@ class DownloadNotificationListener implements IEventListener {
 		try {
 			$isFolder = $node instanceof Folder;
 			$isPublicLink = $this->shareResolver->isPublicShare($share);
-			$subject = $isFolder
-				? ($isPublicLink
-					? $this->l10n->t('Public share folder downloaded')
-					: $this->l10n->t('Folder downloaded'))
-				: ($isPublicLink
-					? $this->l10n->t('Public share file downloaded')
-					: $this->l10n->t('File downloaded'));
-			$description = $isFolder
-				? ($isPublicLink
-					? $this->l10n->t('A folder was downloaded through one of your public share links.')
-					: $this->l10n->t('A folder covered by one of your subscriptions was downloaded.'))
-				: ($isPublicLink
-					? $this->l10n->t('A file was downloaded through one of your public share links.')
-					: $this->l10n->t('A file covered by one of your subscriptions was downloaded.'));
-
-			$message = $this->mailer->createMessage();
-			$message->setSubject($subject);
-			$template = $this->mailer->createEMailTemplate('abonnieren_download');
-			$template->setSubject($subject);
-			$template->addHeader();
-			$template->addHeading($subject);
-			$template->addBodyText($description);
-			$template->addBodyListItem($this->l10n->t('Name:') . ' ' . $node->getName());
-			$template->addBodyListItem($this->l10n->t('Path:') . ' ' . $this->getUserRelativePath($subscriptionNode));
-			if ($node instanceof File) {
-				$template->addBodyListItem($this->l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
-			}
-			$template->addBodyListItem($this->l10n->t('Downloaded by:') . ' ' . $this->getActorDisplayName($isPublicLink));
-			$template->addBodyListItem($this->l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
-
+			$path = $this->getUserRelativePath($subscriptionNode);
 			$token = $share?->getToken();
-			if ($isPublicLink && is_string($token) && $token !== '') {
-				$template->addBodyButton(
-					$this->l10n->t('Open public share'),
-					$this->urlGenerator->linkToRouteAbsolute(
-						'files_sharing.sharecontroller.showShare',
-						['token' => $token],
-					),
-				);
-			} else {
-				$template->addBodyButton(
-					$this->l10n->t('Open file'),
-					$this->urlGenerator->linkToRouteAbsolute(
-						'files.viewcontroller.showFile',
-						[
-							'dir' => $subscriptionNode instanceof Folder
-								? $this->getUserRelativePath($subscriptionNode)
-								: dirname($this->getUserRelativePath($subscriptionNode)),
-							'fileid' => (string)$subscriptionNode->getId(),
-						],
-					),
-				);
-			}
-			$template->addFooter();
 
-			$message->setBody($template->renderText(), 'text/plain');
-			$message->setHtmlBody($template->renderHtml());
-			foreach ($recipients as $recipient) {
-				$message->setTo([$recipient]);
+			foreach ($recipients as $userId => $email) {
+				$l10n = $this->recipientL10n->forUser($userId);
+				$subject = $isFolder
+					? ($isPublicLink
+						? $l10n->t('Public share folder downloaded')
+						: $l10n->t('Folder downloaded'))
+					: ($isPublicLink
+						? $l10n->t('Public share file downloaded')
+						: $l10n->t('File downloaded'));
+				$description = $isFolder
+					? ($isPublicLink
+						? $l10n->t('A folder was downloaded through one of your public share links.')
+						: $l10n->t('A folder covered by one of your subscriptions was downloaded.'))
+					: ($isPublicLink
+						? $l10n->t('A file was downloaded through one of your public share links.')
+						: $l10n->t('A file covered by one of your subscriptions was downloaded.'));
+
+				$message = $this->mailer->createMessage();
+				$message->setSubject($subject);
+				$template = $this->mailer->createEMailTemplate('abonnieren_download');
+				$template->setSubject($subject);
+				$template->addHeader();
+				$template->addHeading($subject);
+				$template->addBodyText($description);
+				$template->addBodyListItem($l10n->t('Name:') . ' ' . $node->getName());
+				$template->addBodyListItem($l10n->t('Path:') . ' ' . $path);
+				if ($node instanceof File) {
+					$template->addBodyListItem($l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
+				}
+				$template->addBodyListItem($l10n->t('Downloaded by:') . ' ' . $this->getActorDisplayName($l10n, $isPublicLink));
+				$template->addBodyListItem($l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
+
+				if ($isPublicLink && is_string($token) && $token !== '') {
+					$template->addBodyButton(
+						$l10n->t('Open public share'),
+						$this->urlGenerator->linkToRouteAbsolute(
+							'files_sharing.sharecontroller.showShare',
+							['token' => $token],
+						),
+					);
+				} else {
+					$template->addBodyButton(
+						$l10n->t('Open file'),
+						$this->urlGenerator->linkToRouteAbsolute(
+							'files.viewcontroller.showFile',
+							[
+								'dir' => $subscriptionNode instanceof Folder
+									? $path
+									: dirname($path),
+								'fileid' => (string)$subscriptionNode->getId(),
+							],
+						),
+					);
+				}
+				$template->addFooter();
+				$message->setBody($template->renderText(), 'text/plain');
+				$message->setHtmlBody($template->renderHtml());
+				$message->setTo([$email]);
 				$this->mailer->send($message);
 			}
 		} catch (\Throwable $e) {
@@ -245,15 +248,15 @@ class DownloadNotificationListener implements IEventListener {
 		return '/' . implode('/', array_slice($parts, 2));
 	}
 
-	private function getActorDisplayName(bool $publicLinkActivity): string {
+	private function getActorDisplayName(IL10N $l10n, bool $publicLinkActivity): string {
 		$user = $this->userSession->getUser();
 		if ($user !== null) {
 			return $user->getDisplayName();
 		}
 
 		return $publicLinkActivity
-			? $this->l10n->t('Anonymous visitor')
-			: $this->l10n->t('Unknown');
+			? $l10n->t('Anonymous visitor')
+			: $l10n->t('Unknown');
 	}
 
 	private function formatSize(int|float $bytes): string {

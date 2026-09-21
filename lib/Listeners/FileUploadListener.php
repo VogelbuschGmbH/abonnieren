@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace OCA\Abonnieren\Listeners;
 
+use OCA\Abonnieren\Service\RecipientL10N;
 use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
@@ -29,7 +30,7 @@ class FileUploadListener implements IEventListener {
 
 	public function __construct(
 		private IMailer $mailer,
-		private IL10N $l10n,
+		private RecipientL10N $recipientL10n,
 		private LoggerInterface $logger,
 		private SubscriptionService $subscriptionService,
 		private IURLGenerator $urlGenerator,
@@ -92,11 +93,11 @@ class FileUploadListener implements IEventListener {
 		$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
 
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
-		$recipients = array_values($this->subscriptionService->getRecipientEmailsForNode(
+		$recipients = $this->subscriptionService->getRecipientEmailsForNode(
 			$subscriptionNode,
 			$eventBit,
 			$user?->getUID(),
-		));
+		);
 		if ($recipients !== []) {
 			$this->sendNotification($subscriptionNode, $recipients, $eventName, $isPublicLink);
 		}
@@ -106,43 +107,44 @@ class FileUploadListener implements IEventListener {
 		}
 	}
 
-	/** @param list<string> $recipients */
+	/** @param array<string, string> $recipients */
 	private function sendNotification(Node $node, array $recipients, string $eventName, bool $publicLinkActivity): void {
 		try {
 			$isFolder = $node instanceof Folder;
 			$path = $this->getUserRelativePath($node);
-			$subject = $this->getSubject($isFolder, $eventName);
-			$description = $this->getDescription($publicLinkActivity);
 
-			$message = $this->mailer->createMessage();
-			$message->setSubject($subject);
-			$template = $this->mailer->createEMailTemplate('abonnieren_file_event');
-			$template->setSubject($subject);
-			$template->addHeader();
-			$template->addHeading($subject);
-			$template->addBodyText($description);
-			$template->addBodyListItem($this->l10n->t('Name:') . ' ' . $node->getName());
-			$template->addBodyListItem($this->l10n->t('Path:') . ' ' . dirname($path));
-			$template->addBodyListItem($this->l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
-			$template->addBodyListItem($this->l10n->t('Type:') . ' ' . ($node instanceof File ? $node->getMimeType() : $this->l10n->t('Folder')));
-			$template->addBodyListItem($this->l10n->t('Changed by:') . ' ' . $this->getActorDisplayName($publicLinkActivity));
-			$template->addBodyListItem($this->l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
+			foreach ($recipients as $userId => $email) {
+				$l10n = $this->recipientL10n->forUser($userId);
+				$subject = $this->getSubject($l10n, $isFolder, $eventName);
+				$description = $this->getDescription($l10n, $publicLinkActivity);
 
-			if ($eventName !== 'deleted') {
-				$template->addBodyButton(
-					$this->l10n->t('Open file'),
-					$this->urlGenerator->linkToRouteAbsolute('files.viewcontroller.showFile', [
-						'dir' => $isFolder ? $path : dirname($path),
-						'fileid' => (string)$node->getId(),
-					]),
-				);
-			}
-			$template->addFooter();
-			$message->setBody($template->renderText(), 'text/plain');
-			$message->setHtmlBody($template->renderHtml());
+				$message = $this->mailer->createMessage();
+				$message->setSubject($subject);
+				$template = $this->mailer->createEMailTemplate('abonnieren_file_event');
+				$template->setSubject($subject);
+				$template->addHeader();
+				$template->addHeading($subject);
+				$template->addBodyText($description);
+				$template->addBodyListItem($l10n->t('Name:') . ' ' . $node->getName());
+				$template->addBodyListItem($l10n->t('Path:') . ' ' . dirname($path));
+				$template->addBodyListItem($l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
+				$template->addBodyListItem($l10n->t('Type:') . ' ' . ($node instanceof File ? $node->getMimeType() : $l10n->t('Folder')));
+				$template->addBodyListItem($l10n->t('Changed by:') . ' ' . $this->getActorDisplayName($l10n, $publicLinkActivity));
+				$template->addBodyListItem($l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
 
-			foreach ($recipients as $recipient) {
-				$message->setTo([$recipient]);
+				if ($eventName !== 'deleted') {
+					$template->addBodyButton(
+						$l10n->t('Open file'),
+						$this->urlGenerator->linkToRouteAbsolute('files.viewcontroller.showFile', [
+							'dir' => $isFolder ? $path : dirname($path),
+							'fileid' => (string)$node->getId(),
+						]),
+					);
+				}
+				$template->addFooter();
+				$message->setBody($template->renderText(), 'text/plain');
+				$message->setHtmlBody($template->renderHtml());
+				$message->setTo([$email]);
 				$this->mailer->send($message);
 			}
 		} catch (\Throwable $e) {
@@ -155,18 +157,18 @@ class FileUploadListener implements IEventListener {
 		}
 	}
 
-	private function getSubject(bool $isFolder, string $eventName): string {
+	private function getSubject(IL10N $l10n, bool $isFolder, string $eventName): string {
 		return match ($eventName) {
-			'created' => $this->l10n->t($isFolder ? 'Folder created' : 'File uploaded'),
-			'deleted' => $this->l10n->t($isFolder ? 'Folder deleted' : 'File deleted'),
-			default => $this->l10n->t($isFolder ? 'Folder modified' : 'File modified'),
+			'created' => $l10n->t($isFolder ? 'Folder created' : 'File uploaded'),
+			'deleted' => $l10n->t($isFolder ? 'Folder deleted' : 'File deleted'),
+			default => $l10n->t($isFolder ? 'Folder modified' : 'File modified'),
 		};
 	}
 
-	private function getDescription(bool $publicLinkActivity): string {
+	private function getDescription(IL10N $l10n, bool $publicLinkActivity): string {
 		return $publicLinkActivity
-			? $this->l10n->t('The event occurred through a public share link.')
-			: $this->l10n->t('The event occurred within the scope of a subscription.');
+			? $l10n->t('The event occurred through a public share link.')
+			: $l10n->t('The event occurred within the scope of a subscription.');
 	}
 
 	private function getUserRelativePath(Node $node): string {
@@ -174,12 +176,12 @@ class FileUploadListener implements IEventListener {
 		return '/' . implode('/', array_slice($parts, 2));
 	}
 
-	private function getActorDisplayName(bool $publicLinkActivity): string {
+	private function getActorDisplayName(IL10N $l10n, bool $publicLinkActivity): string {
 		$user = $this->userSession->getUser();
 		if ($user !== null) {
 			return $user->getDisplayName();
 		}
-		return $publicLinkActivity ? $this->l10n->t('Anonymous visitor') : $this->l10n->t('Unknown');
+		return $publicLinkActivity ? $l10n->t('Anonymous visitor') : $l10n->t('Unknown');
 	}
 
 	private function formatSize(int|float $bytes): string {

@@ -10,6 +10,8 @@
 - Resolve public, email and internal shares the same way for download, upload,
   modification and deletion, including public DAV paths that are not mounted as
   shared storage.
+- Translate notification emails into each subscriber's profile language instead
+  of the language of the request that triggered the event.
 
 ### Changed
 
