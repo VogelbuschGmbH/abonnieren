@@ -11,7 +11,9 @@
   modification and deletion, including public DAV paths that are not mounted as
   shared storage.
 - Translate notification emails into each subscriber's profile language instead
-  of the language of the request that triggered the event.
+  of the language of the request that triggered the event. Fall back from
+  regional codes such as de_DE to de so internal-share mails do not switch to
+  the actor's language.
 
 ### Changed
 
