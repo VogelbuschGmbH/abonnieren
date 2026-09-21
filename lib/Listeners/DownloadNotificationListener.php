@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace OCA\Abonnieren\Listeners;
 
 use OCA\Abonnieren\Activity\ActivityPublisher;
+use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
+use OCP\Constants;
 use OCP\EventDispatcher\Event;
 use OCP\EventDispatcher\IEventListener;
 use OCP\Files\Events\BeforeZipCreatedEvent;
@@ -13,11 +15,8 @@ use OCP\Files\Events\Node\BeforeNodeReadEvent;
 use OCP\Files\File;
 use OCP\Files\Folder;
 use OCP\Files\Node;
-use OCP\Files\NotFoundException;
-use OCP\Files\Storage\ISharedStorage;
 use OCP\ICache;
 use OCP\ICacheFactory;
-use OCP\Files\IRootFolder;
 use OCP\IL10N;
 use OCP\IRequest;
 use OCP\ISession;
@@ -38,11 +37,11 @@ class DownloadNotificationListener implements IEventListener {
 		private IL10N $l10n,
 		private LoggerInterface $logger,
 		private SubscriptionService $subscriptionService,
-		private IRootFolder $rootFolder,
 		private IUserSession $userSession,
 		private IURLGenerator $urlGenerator,
 		private ISession $session,
 		private IRequest $request,
+		private ShareContextResolver $shareResolver,
 		private ActivityPublisher $activityPublisher,
 		ICacheFactory $cacheFactory,
 	) {
@@ -73,26 +72,26 @@ class DownloadNotificationListener implements IEventListener {
 			return;
 		}
 
-		$share = $this->getShare($folder);
-		if (!$this->isPublicLinkShare($share) && $this->userSession->getUser() === null) {
+		$share = $this->resolveShare($folder);
+		if (!$this->shareResolver->isPublicShare($share) && $this->userSession->getUser() === null) {
 			return;
 		}
 
 		$this->cache->set('request:' . $this->request->getId(), $folder->getPath(), 3600);
-		$subscriptionNode = $this->resolveSubscriptionNode($folder, $share);
+		$subscriptionNode = $this->shareResolver->resolveOwnerNode($folder, $share);
 		$this->activityPublisher->publishDownload($share, $subscriptionNode);
 		$this->notify($share, $folder, $subscriptionNode);
 	}
 
 	private function handleFileDownload(BeforeNodeReadEvent $event): void {
 		$node = $event->getNode();
-		if (!$node instanceof File || !$this->isExplicitDownloadRequest()) {
+		if (!$node instanceof File || str_ends_with($node->getName(), '.part') || !$this->isFileOpenRequest()) {
 			return;
 		}
 
-		$share = $this->getShare($node);
+		$share = $this->resolveShare($node);
 		$user = $this->userSession->getUser();
-		if (!$this->isPublicLinkShare($share) && $user === null) {
+		if (!$this->shareResolver->isPublicShare($share) && $user === null) {
 			return;
 		}
 
@@ -117,67 +116,47 @@ class DownloadNotificationListener implements IEventListener {
 		}
 		$this->cache->set($cacheKey, 'true', 3600);
 
-		$subscriptionNode = $this->resolveSubscriptionNode($node, $share);
+		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
 		$this->activityPublisher->publishDownload($share, $subscriptionNode);
 		$this->notify($share, $node, $subscriptionNode);
 	}
 
+	private function resolveShare(Node $node): ?IShare {
+		$share = $this->shareResolver->getShare($node);
+		if ($share === null && $this->userSession->getUser() === null && $this->shareResolver->isPublicRequest()) {
+			$share = $this->shareResolver->findPublicShareForNode($node, Constants::PERMISSION_READ);
+		}
+
+		return $share;
+	}
+
 	/**
-	 * BeforeNodeReadEvent also fires for Viewer, Text, previews and media
-	 * playback. Those are not downloads. The Files download action uses DAV
-	 * HEAD (ignored here) followed by a plain GET from an <a download> click.
+	 * Notify when a file is opened (Viewer, Text, Collabora, public link, DAV)
+	 * as well as when it is downloaded. Ignore probes and folder-list thumbnails.
 	 */
-	private function isExplicitDownloadRequest(): bool {
-		if (strtoupper($this->request->getMethod()) !== 'GET') {
+	private function isFileOpenRequest(): bool {
+		$method = strtoupper($this->request->getMethod());
+		if (in_array($method, ['HEAD', 'OPTIONS', 'PROPFIND', 'REPORT'], true)) {
 			return false;
 		}
 
 		$uri = strtolower($this->request->getRequestUri());
-		if (preg_match('#/(core/preview|apps/files/api/v1/(preview|thumbnail)|apps/files/thumbnail|/wopi/)#', $uri) === 1) {
+		if (preg_match('#/(apps/files/api/v1/(preview|thumbnail)|apps/files/thumbnail)#', $uri) === 1) {
 			return false;
 		}
 
-		if ($this->request->getHeader('range') !== '') {
-			return false;
+		if (str_contains($uri, '/core/preview')) {
+			$x = (int)$this->request->getParam('x', 0);
+			$y = (int)$this->request->getParam('y', 0);
+			// Small previews are generated while browsing a folder, not opening.
+			return max($x, $y) >= 512;
 		}
 
-		$dest = strtolower($this->request->getHeader('sec-fetch-dest'));
-		if (in_array($dest, ['image', 'video', 'audio', 'media', 'iframe', 'embed', 'object', 'script', 'style', 'font'], true)) {
-			return false;
-		}
-
-		$mode = strtolower($this->request->getHeader('sec-fetch-mode'));
-		if ($mode === 'cors' || $mode === 'same-origin') {
-			return false;
-		}
-
-		if (strtolower($this->request->getHeader('x-requested-with')) === 'xmlhttprequest') {
-			return false;
-		}
-		if ($this->request->getHeader('requesttoken') !== '') {
-			return false;
+		if (str_contains($uri, '/wopi/')) {
+			return str_contains($uri, '/contents');
 		}
 
 		return true;
-	}
-
-	private function getShare(Node $node): ?IShare {
-		try {
-			$storage = $node->getStorage();
-		} catch (NotFoundException $e) {
-			return null;
-		}
-
-		if (!$storage->instanceOfStorage(ISharedStorage::class)) {
-			return null;
-		}
-
-		/** @var ISharedStorage $storage */
-		return $storage->getShare();
-	}
-
-	private function isPublicLinkShare(?IShare $share): bool {
-		return $share !== null && $share->getShareType() === IShare::TYPE_LINK;
 	}
 
 	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode): void {
@@ -192,7 +171,7 @@ class DownloadNotificationListener implements IEventListener {
 
 		try {
 			$isFolder = $node instanceof Folder;
-			$isPublicLink = $this->isPublicLinkShare($share);
+			$isPublicLink = $this->shareResolver->isPublicShare($share);
 			$subject = $isFolder
 				? ($isPublicLink
 					? $this->l10n->t('Public share folder downloaded')
@@ -261,34 +240,6 @@ class DownloadNotificationListener implements IEventListener {
 				'nodeId' => (int)$node->getId(),
 				'exception' => $e,
 			]);
-		}
-	}
-
-	private function resolveSubscriptionNode(Node $node, ?IShare $share): Node {
-		if ($share === null) {
-			return $node;
-		}
-
-		try {
-			$shareNode = $share->getNode();
-			if ($shareNode->getId() === $node->getId()) {
-				return $shareNode;
-			}
-
-			$ownerFolder = $this->rootFolder->getUserFolder($share->getSharedBy());
-			$matches = $ownerFolder->getById($node->getId());
-			if ($matches !== []) {
-				return $matches[0];
-			}
-
-			return $shareNode;
-		} catch (\Throwable $e) {
-			$this->logger->debug('Could not resolve owner node for download subscription', [
-				'app' => 'abonnieren',
-				'nodeId' => (int)$node->getId(),
-				'exception' => $e,
-			]);
-			return $node;
 		}
 	}
 

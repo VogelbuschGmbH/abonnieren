@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.0 - 2026-09-21
+
+### Fixed
+
+- Send modification emails when a file is edited through a public share link
+  (including Nextcloud Text on `/s/…`). File changes stay in the native Files
+  activity feed so they are not listed twice.
+- Resolve public, email and internal shares the same way for download, upload,
+  modification and deletion, including public DAV paths that are not mounted as
+  shared storage.
+
+### Changed
+
+- Download subscriptions now notify when a file is opened (Viewer, Text,
+  Collabora, public link or Files/WebDAV), not only after an explicit download.
+
 ## 1.0.6 - 2026-09-21
 
 ### Changed

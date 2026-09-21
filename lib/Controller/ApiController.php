@@ -25,6 +25,7 @@ class ApiController extends OCSController {
 		IShare::TYPE_USER,
 		IShare::TYPE_GROUP,
 		IShare::TYPE_LINK,
+		IShare::TYPE_EMAIL,
 	];
 
 	public function __construct(
@@ -38,7 +39,7 @@ class ApiController extends OCSController {
 	}
 
 	/**
-	 * Enable email notifications for downloads through one user, group or public link share.
+	 * Enable email notifications for downloads through one user, group, email or public link share.
 	 *
 	 * The authenticated user is derived from the app-password session. The
 	 * supplied share ID is accepted only when it belongs to that user and is a
@@ -51,7 +52,7 @@ class ApiController extends OCSController {
 	}
 
 	/**
-	 * Enable selected email notifications for one user, group or public link share.
+	 * Enable selected email notifications for one user, group, email or public link share.
 	 *
 	 * Event mask: upload=1, modification=2, deletion=4, download=8.
 	 */
@@ -77,7 +78,7 @@ class ApiController extends OCSController {
 		}
 
 		if (!in_array($share->getShareType(), self::SUPPORTED_SHARE_TYPES, true)) {
-			return new DataResponse(['enabled' => false, 'message' => 'Only user, group and public link shares are supported'], Http::STATUS_BAD_REQUEST);
+			return new DataResponse(['enabled' => false, 'message' => 'Only user, group, email and public link shares are supported'], Http::STATUS_BAD_REQUEST);
 		}
 
 		if ($share->getSharedBy() !== $user->getUID()) {

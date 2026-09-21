@@ -1,7 +1,7 @@
 <?php
 
-script('abonnieren', 'script', ['version' => '1.0.3']);
-style('abonnieren', 'style', ['version' => '1.0.3']);
+script('abonnieren', 'script', ['version' => '1.1.0']);
+style('abonnieren', 'style', ['version' => '1.1.0']);
 ?>
 
 <div id="app-content">
