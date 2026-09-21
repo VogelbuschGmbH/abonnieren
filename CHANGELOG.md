@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.6 - 2026-09-21
+
+### Changed
+
+- Fill App Store metadata in `info.xml`: SPDX licence, bugs URL and repository.
+
 ## 1.0.5 - 2026-09-17
 
 ### Added
