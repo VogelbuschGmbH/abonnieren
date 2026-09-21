@@ -17,6 +17,7 @@ class SubscriptionService {
 	public const EVENT_DELETION = 4;
 	public const EVENT_DOWNLOAD = 8;
 	public const ALLOWED_EVENTS = 15;
+	public const DEBOUNCE_SECONDS = 600;
 
 	public function __construct(
 		private IDBConnection $db,

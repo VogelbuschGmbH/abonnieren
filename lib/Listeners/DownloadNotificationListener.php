@@ -19,7 +19,6 @@ use OCP\ICache;
 use OCP\ICacheFactory;
 use OCP\IL10N;
 use OCP\IRequest;
-use OCP\ISession;
 use OCP\IURLGenerator;
 use OCP\IUserSession;
 use OCP\Mail\IMailer;
@@ -39,13 +38,12 @@ class DownloadNotificationListener implements IEventListener {
 		private SubscriptionService $subscriptionService,
 		private IUserSession $userSession,
 		private IURLGenerator $urlGenerator,
-		private ISession $session,
 		private IRequest $request,
 		private ShareContextResolver $shareResolver,
 		private ActivityPublisher $activityPublisher,
 		ICacheFactory $cacheFactory,
 	) {
-		$this->cache = $cacheFactory->createDistributed('abonnieren_download_notifications');
+		$this->cache = $cacheFactory->createDistributed('abonnieren_event_debounce');
 	}
 
 	public function handle(Event $event): void {
@@ -73,11 +71,19 @@ class DownloadNotificationListener implements IEventListener {
 		}
 
 		$share = $this->resolveShare($folder);
-		if (!$this->shareResolver->isPublicShare($share) && $this->userSession->getUser() === null) {
+		$user = $this->userSession->getUser();
+		if (!$this->shareResolver->isPublicShare($share) && $user === null) {
 			return;
 		}
 
-		$this->cache->set('request:' . $this->request->getId(), $folder->getPath(), 3600);
+		$actorKey = $user?->getUID() ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
+		$cacheKey = implode(':', ['download', (string)$folder->getId(), $actorKey]);
+		if ($this->cache->get($cacheKey) === true) {
+			return;
+		}
+		$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
+
+		$this->cache->set('request:' . $this->request->getId(), $folder->getPath(), SubscriptionService::DEBOUNCE_SECONDS);
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($folder, $share);
 		$this->activityPublisher->publishDownload($share, $subscriptionNode);
 		$this->notify($share, $folder, $subscriptionNode);
@@ -100,21 +106,12 @@ class DownloadNotificationListener implements IEventListener {
 			return;
 		}
 
-		// One email per visitor and file. The remote address is hashed into the
-		// key and is never stored or included in the message.
-		$accessKey = $user !== null
-			? 'user:' . $user->getUID()
-			: 'share:' . (string)($share?->getId() ?? 'anon');
-		$cacheKey = 'download:' . hash('sha256', implode('|', [
-			$accessKey,
-			(string)$node->getId(),
-			$this->session->getId(),
-			$this->request->getRemoteAddress(),
-		]));
-		if ($this->cache->get($cacheKey) === 'true') {
+		$actorKey = $user?->getUID() ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
+		$cacheKey = implode(':', ['download', (string)$node->getId(), $actorKey]);
+		if ($this->cache->get($cacheKey) === true) {
 			return;
 		}
-		$this->cache->set($cacheKey, 'true', 3600);
+		$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
 
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
 		$this->activityPublisher->publishDownload($share, $subscriptionNode);

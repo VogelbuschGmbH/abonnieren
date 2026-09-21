@@ -37,7 +37,7 @@ class FileUploadListener implements IEventListener {
 		private IUserSession $userSession,
 		private ShareContextResolver $shareResolver,
 	) {
-		$this->cache = $cacheFactory->createLocal('abonnieren_file_event_debounce');
+		$this->cache = $cacheFactory->createDistributed('abonnieren_event_debounce');
 	}
 
 	public function handle(Event $event): void {
@@ -80,11 +80,16 @@ class FileUploadListener implements IEventListener {
 		}
 
 		$actorKey = $user?->getUID() ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
-		$cacheKey = implode(':', [$eventName, (string)$node->getId(), $actorKey]);
+		$category = match ($eventName) {
+			'created' => 'upload',
+			'deleted' => 'deletion',
+			default => 'modification',
+		};
+		$cacheKey = implode(':', [$category, (string)$node->getId(), $actorKey]);
 		if ($this->cache->get($cacheKey) === true) {
 			return;
 		}
-		$this->cache->set($cacheKey, true, 10);
+		$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
 
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
 		$recipients = array_values($this->subscriptionService->getRecipientEmailsForNode(

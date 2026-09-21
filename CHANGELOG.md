@@ -15,6 +15,8 @@
 
 - Download subscriptions now notify when a file is opened (Viewer, Text,
   Collabora, public link or Files/WebDAV), not only after an explicit download.
+- Debounce all notification categories (download, upload, modification,
+  deletion) for 10 minutes per actor and file.
 
 ## 1.0.6 - 2026-09-21
 
