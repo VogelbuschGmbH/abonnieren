@@ -12,6 +12,7 @@ use OCP\Files\Events\Node\NodeDeletedEvent;
 use OCP\Files\Events\Node\NodeWrittenEvent;
 use OCP\Files\File;
 use OCP\Files\Folder;
+use OCP\Files\IRootFolder;
 use OCP\Files\Node;
 use OCP\Files\NotFoundException;
 use OCP\Files\Storage\ISharedStorage;
@@ -41,6 +42,7 @@ class FileUploadListener implements IEventListener {
 		private IUserSession $userSession,
 		private IRequest $request,
 		private IManager $shareManager,
+		private IRootFolder $rootFolder,
 	) {
 		$this->cache = $cacheFactory->createLocal('abonnieren_file_event_debounce');
 	}
@@ -60,6 +62,9 @@ class FileUploadListener implements IEventListener {
 		if (!$node instanceof File && !$node instanceof Folder) {
 			return;
 		}
+		if (str_ends_with($node->getName(), '.part')) {
+			return;
+		}
 
 		// Folder write events are implementation details and would create noisy
 		// modification emails. Folder creation and deletion remain meaningful.
@@ -68,25 +73,27 @@ class FileUploadListener implements IEventListener {
 		}
 
 		$user = $this->userSession->getUser();
-		$publicShare = $this->getPublicLinkShare($node);
-		if ($user === null && $publicShare === null) {
+		$share = $this->getShare($node);
+		$isPublicLink = $this->isPublicLinkShare($share);
+		if ($user === null && !$isPublicLink && !$this->isSessionlessWriteRequest()) {
 			return;
 		}
 
-		$actorKey = $user?->getUID() ?? ('share_' . $publicShare->getId());
+		$actorKey = $user?->getUID() ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
 		$cacheKey = implode(':', [$eventName, (string)$node->getId(), $actorKey]);
 		if ($this->cache->get($cacheKey) === true) {
 			return;
 		}
 		$this->cache->set($cacheKey, true, 10);
 
+		$subscriptionNode = $this->resolveSubscriptionNode($node, $share);
 		$recipients = array_values($this->subscriptionService->getRecipientEmailsForNode(
-			$node,
+			$subscriptionNode,
 			$eventBit,
 			$user?->getUID(),
 		));
 		if ($recipients !== []) {
-			$this->sendNotification($node, $recipients, $eventName, $publicShare !== null);
+			$this->sendNotification($subscriptionNode, $recipients, $eventName, $isPublicLink);
 		}
 
 		if ($event instanceof NodeDeletedEvent) {
@@ -94,15 +101,17 @@ class FileUploadListener implements IEventListener {
 		}
 	}
 
-	private function getPublicLinkShare(Node $node): ?IShare {
+	private function isSessionlessWriteRequest(): bool {
+		$uri = strtolower($this->request->getRequestUri());
+		return str_contains($uri, '/wopi/');
+	}
+
+	private function getShare(Node $node): ?IShare {
 		try {
 			$storage = $node->getStorage();
 			if ($storage->instanceOfStorage(ISharedStorage::class)) {
 				/** @var ISharedStorage $storage */
-				$share = $storage->getShare();
-				if ($share->getShareType() === IShare::TYPE_LINK) {
-					return $share;
-				}
+				return $storage->getShare();
 			}
 		} catch (NotFoundException $e) {
 			// Continue with request-token lookup below.
@@ -115,10 +124,6 @@ class FileUploadListener implements IEventListener {
 
 		try {
 			$share = $this->shareManager->getShareByToken($token);
-			if ($share->getShareType() !== IShare::TYPE_LINK) {
-				return null;
-			}
-
 			$shareNode = $share->getNode();
 			if ($shareNode->getId() === $node->getId()) {
 				return $share;
@@ -128,6 +133,38 @@ class FileUploadListener implements IEventListener {
 			return str_starts_with($node->getPath(), $sharePath) ? $share : null;
 		} catch (ShareNotFound|NotFoundException $e) {
 			return null;
+		}
+	}
+
+	private function isPublicLinkShare(?IShare $share): bool {
+		return $share !== null && $share->getShareType() === IShare::TYPE_LINK;
+	}
+
+	private function resolveSubscriptionNode(Node $node, ?IShare $share): Node {
+		if ($share === null) {
+			return $node;
+		}
+
+		try {
+			$shareNode = $share->getNode();
+			if ($shareNode->getId() === $node->getId()) {
+				return $shareNode;
+			}
+
+			$ownerFolder = $this->rootFolder->getUserFolder($share->getSharedBy());
+			$matches = $ownerFolder->getById($node->getId());
+			if ($matches !== []) {
+				return $matches[0];
+			}
+
+			return $shareNode;
+		} catch (\Throwable $e) {
+			$this->logger->debug('Could not resolve owner node for file event subscription', [
+				'app' => 'abonnieren',
+				'nodeId' => (int)$node->getId(),
+				'exception' => $e,
+			]);
+			return $node;
 		}
 	}
 
