@@ -16,11 +16,14 @@
   the actor's language.
 - Fix invalid public-share URL regexes that aborted share resolution with
   `preg_match(): Unknown modifier ']'` and prevented notification emails.
+- Notify on any real filesystem open/write (Files, shares, Text, Collabora,
+  ONLYOFFICE, desktop clients, …) instead of an app URL allowlist. Only probes,
+  tiny previews and internal system paths are ignored.
 
 ### Changed
 
-- Download subscriptions now notify when a file is opened (Viewer, Text,
-  Collabora, public link or Files/WebDAV), not only after an explicit download.
+- Download subscriptions now notify when a file is opened or downloaded, for
+  any client that actually reads the file body.
 - Debounce all notification categories (download, upload, modification,
   deletion) for 10 minutes per actor and file.
 

@@ -56,7 +56,7 @@ class FileUploadListener implements IEventListener {
 		if (!$node instanceof File && !$node instanceof Folder) {
 			return;
 		}
-		if (str_ends_with($node->getName(), '.part')) {
+		if (str_ends_with($node->getName(), '.part') || $this->isInternalSystemPath($node)) {
 			return;
 		}
 
@@ -67,20 +67,15 @@ class FileUploadListener implements IEventListener {
 		}
 
 		$user = $this->userSession->getUser();
-		$share = $this->shareResolver->getShare($node);
-		$publicRequest = $this->shareResolver->isPublicRequest();
-		if ($user === null && $share === null && $publicRequest) {
-			$share = $this->shareResolver->findPublicShareForNode(
-				$node,
-				Constants::PERMISSION_UPDATE | Constants::PERMISSION_CREATE | Constants::PERMISSION_DELETE,
-			);
-		}
+		$actorUserId = $user?->getUID() ?? $this->resolveActorUserId();
+		$share = $this->shareResolver->resolveShareContext(
+			$node,
+			$user === null,
+			Constants::PERMISSION_UPDATE | Constants::PERMISSION_CREATE | Constants::PERMISSION_DELETE,
+		);
 		$isPublicLink = $this->shareResolver->isPublicShare($share);
-		if ($user === null && !$isPublicLink && !$publicRequest) {
-			return;
-		}
 
-		$actorKey = $user?->getUID() ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
+		$actorKey = $actorUserId ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
 		$category = match ($eventName) {
 			'created' => 'upload',
 			'deleted' => 'deletion',
@@ -96,7 +91,7 @@ class FileUploadListener implements IEventListener {
 		$recipients = $this->subscriptionService->getRecipientEmailsForNode(
 			$subscriptionNode,
 			$eventBit,
-			$user?->getUID(),
+			$actorUserId,
 		);
 		if ($recipients !== []) {
 			$this->sendNotification($subscriptionNode, $recipients, $eventName, $isPublicLink);
@@ -182,6 +177,23 @@ class FileUploadListener implements IEventListener {
 			return $user->getDisplayName();
 		}
 		return $publicLinkActivity ? $l10n->t('Anonymous visitor') : $l10n->t('Unknown');
+	}
+
+	/** Editors such as ONLYOFFICE may set OC_User without a full IUserSession. */
+	private function resolveActorUserId(): ?string {
+		if (!class_exists(\OC_User::class)) {
+			return null;
+		}
+		$uid = \OC_User::getUser();
+		return is_string($uid) && $uid !== '' ? $uid : null;
+	}
+
+	private function isInternalSystemPath(Node $node): bool {
+		$path = $node->getPath();
+		return str_contains($path, '/appdata_')
+			|| str_contains($path, '/files_trashbin/')
+			|| str_contains($path, '/files_versions/')
+			|| str_contains($path, '/thumbnails/');
 	}
 
 	private function formatSize(int|float $bytes): string {

@@ -49,18 +49,21 @@ class ShareContextResolver {
 		return null;
 	}
 
-	public function isPublicShare(?IShare $share): bool {
-		return $share !== null && in_array($share->getShareType(), [IShare::TYPE_LINK, IShare::TYPE_EMAIL], true);
+	/**
+	 * Resolve the share for messaging. When the request has no logged-in user,
+	 * also look up a public/email share covering the node so wording stays accurate.
+	 */
+	public function resolveShareContext(Node $node, bool $allowPublicLookup, int $requiredPermissions = 0): ?IShare {
+		$share = $this->getShare($node);
+		if ($share !== null || !$allowPublicLookup) {
+			return $share;
+		}
+
+		return $this->findPublicShareForNode($node, $requiredPermissions);
 	}
 
-	public function isPublicRequest(): bool {
-		$uri = strtolower($this->request->getRequestUri());
-		return str_contains($uri, '/wopi/')
-			|| str_contains($uri, '/apps/text/public')
-			|| str_contains($uri, '/text/public/session')
-			|| str_contains($uri, '/public.php/')
-			|| str_contains($uri, '/dav/public-files/')
-			|| preg_match('~/s/[^/?#]+~', $uri) === 1;
+	public function isPublicShare(?IShare $share): bool {
+		return $share !== null && in_array($share->getShareType(), [IShare::TYPE_LINK, IShare::TYPE_EMAIL], true);
 	}
 
 	public function findPublicShareForNode(Node $node, int $requiredPermissions = 0): ?IShare {

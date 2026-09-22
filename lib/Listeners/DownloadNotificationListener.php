@@ -67,17 +67,19 @@ class DownloadNotificationListener implements IEventListener {
 		}
 
 		$folder = $event->getFolder();
-		if (!$folder instanceof Folder) {
+		if (!$folder instanceof Folder || $this->isInternalSystemPath($folder)) {
 			return;
 		}
 
-		$share = $this->resolveShare($folder);
+		$share = $this->shareResolver->resolveShareContext(
+			$folder,
+			$this->userSession->getUser() === null,
+			Constants::PERMISSION_READ,
+		);
 		$user = $this->userSession->getUser();
-		if (!$this->shareResolver->isPublicShare($share) && $user === null) {
-			return;
-		}
+		$actorUserId = $user?->getUID() ?? $this->resolveActorUserId();
 
-		$actorKey = $user?->getUID() ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
+		$actorKey = $actorUserId ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
 		$cacheKey = implode(':', ['download', (string)$folder->getId(), $actorKey]);
 		if ($this->cache->get($cacheKey) === true) {
 			return;
@@ -87,27 +89,29 @@ class DownloadNotificationListener implements IEventListener {
 		$this->cache->set('request:' . $this->request->getId(), $folder->getPath(), SubscriptionService::DEBOUNCE_SECONDS);
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($folder, $share);
 		$this->activityPublisher->publishDownload($share, $subscriptionNode);
-		$this->notify($share, $folder, $subscriptionNode);
+		$this->notify($share, $folder, $subscriptionNode, $actorUserId);
 	}
 
 	private function handleFileDownload(BeforeNodeReadEvent $event): void {
 		$node = $event->getNode();
-		if (!$node instanceof File || str_ends_with($node->getName(), '.part') || !$this->isFileOpenRequest()) {
+		if (!$node instanceof File || str_ends_with($node->getName(), '.part') || $this->isInternalSystemPath($node) || !$this->isFileOpenRequest()) {
 			return;
 		}
 
-		$share = $this->resolveShare($node);
+		$share = $this->shareResolver->resolveShareContext(
+			$node,
+			$this->userSession->getUser() === null,
+			Constants::PERMISSION_READ,
+		);
 		$user = $this->userSession->getUser();
-		if (!$this->shareResolver->isPublicShare($share) && $user === null) {
-			return;
-		}
+		$actorUserId = $user?->getUID() ?? $this->resolveActorUserId();
 
 		$folderPath = $this->cache->get('request:' . $this->request->getId());
 		if (is_string($folderPath) && str_starts_with($node->getPath(), $folderPath)) {
 			return;
 		}
 
-		$actorKey = $user?->getUID() ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
+		$actorKey = $actorUserId ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
 		$cacheKey = implode(':', ['download', (string)$node->getId(), $actorKey]);
 		if ($this->cache->get($cacheKey) === true) {
 			return;
@@ -116,21 +120,12 @@ class DownloadNotificationListener implements IEventListener {
 
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
 		$this->activityPublisher->publishDownload($share, $subscriptionNode);
-		$this->notify($share, $node, $subscriptionNode);
-	}
-
-	private function resolveShare(Node $node): ?IShare {
-		$share = $this->shareResolver->getShare($node);
-		if ($share === null && $this->userSession->getUser() === null && $this->shareResolver->isPublicRequest()) {
-			$share = $this->shareResolver->findPublicShareForNode($node, Constants::PERMISSION_READ);
-		}
-
-		return $share;
+		$this->notify($share, $node, $subscriptionNode, $actorUserId);
 	}
 
 	/**
-	 * Notify when a file is opened (Viewer, Text, Collabora, public link, DAV)
-	 * as well as when it is downloaded. Ignore probes and folder-list thumbnails.
+	 * Any real file body read counts as an open/download. Only ignore probes
+	 * and folder-list thumbnails — no per-app allowlist.
 	 */
 	private function isFileOpenRequest(): bool {
 		$method = strtoupper($this->request->getMethod());
@@ -139,7 +134,7 @@ class DownloadNotificationListener implements IEventListener {
 		}
 
 		$uri = strtolower($this->request->getRequestUri());
-		if (preg_match('#/(apps/files/api/v1/(preview|thumbnail)|apps/files/thumbnail)#', $uri) === 1) {
+		if (preg_match('~/(apps/files/api/v1/(preview|thumbnail)|apps/files/thumbnail)~', $uri) === 1) {
 			return false;
 		}
 
@@ -150,18 +145,14 @@ class DownloadNotificationListener implements IEventListener {
 			return max($x, $y) >= 512;
 		}
 
-		if (str_contains($uri, '/wopi/')) {
-			return str_contains($uri, '/contents');
-		}
-
 		return true;
 	}
 
-	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode): void {
+	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode, ?string $actorUserId = null): void {
 		$recipients = $this->subscriptionService->getRecipientEmailsForNode(
 			$subscriptionNode,
 			SubscriptionService::EVENT_DOWNLOAD,
-			$this->userSession->getUser()?->getUID(),
+			$actorUserId ?? $this->userSession->getUser()?->getUID(),
 		);
 		if ($recipients === []) {
 			return;
@@ -257,6 +248,23 @@ class DownloadNotificationListener implements IEventListener {
 		return $publicLinkActivity
 			? $l10n->t('Anonymous visitor')
 			: $l10n->t('Unknown');
+	}
+
+	/** Editors such as ONLYOFFICE may set OC_User without a full IUserSession. */
+	private function resolveActorUserId(): ?string {
+		if (!class_exists(\OC_User::class)) {
+			return null;
+		}
+		$uid = \OC_User::getUser();
+		return is_string($uid) && $uid !== '' ? $uid : null;
+	}
+
+	private function isInternalSystemPath(Node $node): bool {
+		$path = $node->getPath();
+		return str_contains($path, '/appdata_')
+			|| str_contains($path, '/files_trashbin/')
+			|| str_contains($path, '/files_versions/')
+			|| str_contains($path, '/thumbnails/');
 	}
 
 	private function formatSize(int|float $bytes): string {
