@@ -20,7 +20,7 @@ class Setting implements ISetting {
 	}
 
 	public function getName(): string {
-		return $this->l10n->t('A file or folder was downloaded');
+		return $this->l10n->t('A subscribed file or folder was opened or changed');
 	}
 
 	public function getPriority(): int {

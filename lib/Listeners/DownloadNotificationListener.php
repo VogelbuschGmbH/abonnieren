@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OCA\Abonnieren\Listeners;
 
 use OCA\Abonnieren\Activity\ActivityPublisher;
+use OCA\Abonnieren\Activity\Provider;
 use OCA\Abonnieren\Service\RecipientL10N;
 use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
@@ -88,7 +89,6 @@ class DownloadNotificationListener implements IEventListener {
 
 		$this->cache->set('request:' . $this->request->getId(), $folder->getPath(), SubscriptionService::DEBOUNCE_SECONDS);
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($folder, $share);
-		$this->activityPublisher->publishDownload($share, $subscriptionNode);
 		$this->notify($share, $folder, $subscriptionNode, $actorUserId);
 	}
 
@@ -119,7 +119,6 @@ class DownloadNotificationListener implements IEventListener {
 		$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
 
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
-		$this->activityPublisher->publishDownload($share, $subscriptionNode);
 		$this->notify($share, $node, $subscriptionNode, $actorUserId);
 	}
 
@@ -157,6 +156,13 @@ class DownloadNotificationListener implements IEventListener {
 		if ($recipients === []) {
 			return;
 		}
+
+		$this->activityPublisher->publishForRecipients(
+			Provider::SUBJECT_DOWNLOADED,
+			$subscriptionNode,
+			$actorUserId ?? $this->userSession->getUser()?->getUID(),
+			array_keys($recipients),
+		);
 
 		try {
 			$isFolder = $node instanceof Folder;

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace OCA\Abonnieren\Listeners;
 
+use OCA\Abonnieren\Activity\ActivityPublisher;
+use OCA\Abonnieren\Activity\Provider;
 use OCA\Abonnieren\Service\RecipientL10N;
 use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
@@ -37,6 +39,7 @@ class FileUploadListener implements IEventListener {
 		ICacheFactory $cacheFactory,
 		private IUserSession $userSession,
 		private ShareContextResolver $shareResolver,
+		private ActivityPublisher $activityPublisher,
 	) {
 		$this->cache = $cacheFactory->createDistributed('abonnieren_event_debounce');
 	}
@@ -95,6 +98,17 @@ class FileUploadListener implements IEventListener {
 		);
 		if ($recipients !== []) {
 			$this->sendNotification($subscriptionNode, $recipients, $eventName, $isPublicLink);
+			$activitySubject = match ($eventName) {
+				'created' => Provider::SUBJECT_CREATED,
+				'deleted' => Provider::SUBJECT_DELETED,
+				default => Provider::SUBJECT_MODIFIED,
+			};
+			$this->activityPublisher->publishForRecipients(
+				$activitySubject,
+				$subscriptionNode,
+				$actorUserId,
+				array_keys($recipients),
+			);
 		}
 
 		if ($event instanceof NodeDeletedEvent) {

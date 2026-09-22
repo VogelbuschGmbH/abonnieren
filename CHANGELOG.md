@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.2 - 2026-09-22
+
+### Changed
+
+- Write an Activity entry (bell icon) for every subscription email — opens,
+  downloads, uploads, modifications and deletions, including public-link
+  events — to each subscriber who was emailed.
+
 ## 1.1.1 - 2026-09-22
 
 ### Fixed
