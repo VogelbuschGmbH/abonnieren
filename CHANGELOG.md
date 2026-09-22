@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.1 - 2026-09-22
+
+### Fixed
+
+- Fix invalid public-share URL regexes that aborted share resolution with
+  `preg_match(): Unknown modifier ']'` and prevented notification emails.
+- Notify on any real filesystem open/write (Files, shares, Text, Collabora,
+  ONLYOFFICE, desktop clients, …) instead of an app URL allowlist. Only probes,
+  tiny previews and internal system paths are ignored.
+
+### Changed
+
+- Download subscriptions now notify when a file is opened or downloaded, for
+  any client that actually reads the file body.
+
 ## 1.1.0 - 2026-09-21
 
 ### Fixed
@@ -14,16 +29,9 @@
   of the language of the request that triggered the event. Fall back from
   regional codes such as de_DE to de so internal-share mails do not switch to
   the actor's language.
-- Fix invalid public-share URL regexes that aborted share resolution with
-  `preg_match(): Unknown modifier ']'` and prevented notification emails.
-- Notify on any real filesystem open/write (Files, shares, Text, Collabora,
-  ONLYOFFICE, desktop clients, …) instead of an app URL allowlist. Only probes,
-  tiny previews and internal system paths are ignored.
 
 ### Changed
 
-- Download subscriptions now notify when a file is opened or downloaded, for
-  any client that actually reads the file body.
 - Debounce all notification categories (download, upload, modification,
   deletion) for 10 minutes per actor and file.
 
