@@ -60,7 +60,7 @@ class ShareContextResolver {
 			|| str_contains($uri, '/text/public/session')
 			|| str_contains($uri, '/public.php/')
 			|| str_contains($uri, '/dav/public-files/')
-			|| preg_match('#/s/[^/?#]+#', $uri) === 1;
+			|| preg_match('~/s/[^/?#]+~', $uri) === 1;
 	}
 
 	public function findPublicShareForNode(Node $node, int $requiredPermissions = 0): ?IShare {
@@ -135,7 +135,7 @@ class ShareContextResolver {
 		}
 
 		$uri = $this->request->getRequestUri();
-		if (preg_match('#/(?:s|public\\.php/dav/files|remote\\.php/dav/public-files)/([^/?#]+)#', $uri, $matches) === 1) {
+		if (preg_match('~/(?:s|public\.php/dav/files|remote\.php/dav/public-files)/([^/?#]+)~', $uri, $matches) === 1) {
 			$tokens[] = rawurldecode($matches[1]);
 		}
 

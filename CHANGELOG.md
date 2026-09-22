@@ -14,6 +14,8 @@
   of the language of the request that triggered the event. Fall back from
   regional codes such as de_DE to de so internal-share mails do not switch to
   the actor's language.
+- Fix invalid public-share URL regexes that aborted share resolution with
+  `preg_match(): Unknown modifier ']'` and prevented notification emails.
 
 ### Changed
 
