@@ -4,7 +4,12 @@ declare(strict_types=1);
 
 namespace OCA\Abonnieren\Listeners;
 
+use OCA\Abonnieren\Activity\ActivityPublisher;
+use OCA\Abonnieren\Activity\Provider;
+use OCA\Abonnieren\Service\RecipientL10N;
+use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
+use OCP\Constants;
 use OCP\EventDispatcher\Event;
 use OCP\EventDispatcher\IEventListener;
 use OCP\Files\Events\Node\NodeCreatedEvent;
@@ -13,18 +18,12 @@ use OCP\Files\Events\Node\NodeWrittenEvent;
 use OCP\Files\File;
 use OCP\Files\Folder;
 use OCP\Files\Node;
-use OCP\Files\NotFoundException;
-use OCP\Files\Storage\ISharedStorage;
 use OCP\ICache;
 use OCP\ICacheFactory;
 use OCP\IL10N;
-use OCP\IRequest;
-use OCP\IURLGenerator;
 use OCP\IUserSession;
+use OCP\IURLGenerator;
 use OCP\Mail\IMailer;
-use OCP\Share\Exceptions\ShareNotFound;
-use OCP\Share\IManager;
-use OCP\Share\IShare;
 use Psr\Log\LoggerInterface;
 
 /** @template-implements IEventListener<NodeCreatedEvent|NodeDeletedEvent|NodeWrittenEvent|Event> */
@@ -33,16 +32,16 @@ class FileUploadListener implements IEventListener {
 
 	public function __construct(
 		private IMailer $mailer,
-		private IL10N $l10n,
+		private RecipientL10N $recipientL10n,
 		private LoggerInterface $logger,
 		private SubscriptionService $subscriptionService,
 		private IURLGenerator $urlGenerator,
 		ICacheFactory $cacheFactory,
 		private IUserSession $userSession,
-		private IRequest $request,
-		private IManager $shareManager,
+		private ShareContextResolver $shareResolver,
+		private ActivityPublisher $activityPublisher,
 	) {
-		$this->cache = $cacheFactory->createLocal('abonnieren_file_event_debounce');
+		$this->cache = $cacheFactory->createDistributed('abonnieren_event_debounce');
 	}
 
 	public function handle(Event $event): void {
@@ -60,6 +59,9 @@ class FileUploadListener implements IEventListener {
 		if (!$node instanceof File && !$node instanceof Folder) {
 			return;
 		}
+		if (str_ends_with($node->getName(), '.part') || $this->isInternalSystemPath($node)) {
+			return;
+		}
 
 		// Folder write events are implementation details and would create noisy
 		// modification emails. Folder creation and deletion remain meaningful.
@@ -68,25 +70,45 @@ class FileUploadListener implements IEventListener {
 		}
 
 		$user = $this->userSession->getUser();
-		$publicShare = $this->getPublicLinkShare($node);
-		if ($user === null && $publicShare === null) {
-			return;
-		}
+		$actorUserId = $user?->getUID() ?? $this->resolveActorUserId();
+		$share = $this->shareResolver->resolveShareContext(
+			$node,
+			$user === null,
+			Constants::PERMISSION_UPDATE | Constants::PERMISSION_CREATE | Constants::PERMISSION_DELETE,
+		);
+		$isPublicLink = $this->shareResolver->isPublicShare($share);
 
-		$actorKey = $user?->getUID() ?? ('share_' . $publicShare->getId());
-		$cacheKey = implode(':', [$eventName, (string)$node->getId(), $actorKey]);
+		$actorKey = $actorUserId ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
+		$category = match ($eventName) {
+			'created' => 'upload',
+			'deleted' => 'deletion',
+			default => 'modification',
+		};
+		$cacheKey = implode(':', [$category, (string)$node->getId(), $actorKey]);
 		if ($this->cache->get($cacheKey) === true) {
 			return;
 		}
-		$this->cache->set($cacheKey, true, 10);
+		$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
 
-		$recipients = array_values($this->subscriptionService->getRecipientEmailsForNode(
-			$node,
+		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
+		$recipients = $this->subscriptionService->getRecipientEmailsForNode(
+			$subscriptionNode,
 			$eventBit,
-			$user?->getUID(),
-		));
+			$actorUserId,
+		);
 		if ($recipients !== []) {
-			$this->sendNotification($node, $recipients, $eventName, $publicShare !== null);
+			$this->sendNotification($subscriptionNode, $recipients, $eventName, $isPublicLink);
+			$activitySubject = match ($eventName) {
+				'created' => Provider::SUBJECT_CREATED,
+				'deleted' => Provider::SUBJECT_DELETED,
+				default => Provider::SUBJECT_MODIFIED,
+			};
+			$this->activityPublisher->publishForRecipients(
+				$activitySubject,
+				$subscriptionNode,
+				$actorUserId,
+				array_keys($recipients),
+			);
 		}
 
 		if ($event instanceof NodeDeletedEvent) {
@@ -94,80 +116,44 @@ class FileUploadListener implements IEventListener {
 		}
 	}
 
-	private function getPublicLinkShare(Node $node): ?IShare {
-		try {
-			$storage = $node->getStorage();
-			if ($storage->instanceOfStorage(ISharedStorage::class)) {
-				/** @var ISharedStorage $storage */
-				$share = $storage->getShare();
-				if ($share->getShareType() === IShare::TYPE_LINK) {
-					return $share;
-				}
-			}
-		} catch (NotFoundException $e) {
-			// Continue with request-token lookup below.
-		}
-
-		$token = (string)$this->request->getParam('token', '');
-		if ($token === '') {
-			return null;
-		}
-
-		try {
-			$share = $this->shareManager->getShareByToken($token);
-			if ($share->getShareType() !== IShare::TYPE_LINK) {
-				return null;
-			}
-
-			$shareNode = $share->getNode();
-			if ($shareNode->getId() === $node->getId()) {
-				return $share;
-			}
-
-			$sharePath = rtrim($shareNode->getPath(), '/') . '/';
-			return str_starts_with($node->getPath(), $sharePath) ? $share : null;
-		} catch (ShareNotFound|NotFoundException $e) {
-			return null;
-		}
-	}
-
-	/** @param list<string> $recipients */
+	/** @param array<string, string> $recipients */
 	private function sendNotification(Node $node, array $recipients, string $eventName, bool $publicLinkActivity): void {
 		try {
 			$isFolder = $node instanceof Folder;
 			$path = $this->getUserRelativePath($node);
-			$subject = $this->getSubject($isFolder, $eventName);
-			$description = $this->getDescription($publicLinkActivity);
 
-			$message = $this->mailer->createMessage();
-			$message->setSubject($subject);
-			$template = $this->mailer->createEMailTemplate('abonnieren_file_event');
-			$template->setSubject($subject);
-			$template->addHeader();
-			$template->addHeading($subject);
-			$template->addBodyText($description);
-			$template->addBodyListItem($this->l10n->t('Name:') . ' ' . $node->getName());
-			$template->addBodyListItem($this->l10n->t('Path:') . ' ' . dirname($path));
-			$template->addBodyListItem($this->l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
-			$template->addBodyListItem($this->l10n->t('Type:') . ' ' . ($node instanceof File ? $node->getMimeType() : $this->l10n->t('Folder')));
-			$template->addBodyListItem($this->l10n->t('Changed by:') . ' ' . $this->getActorDisplayName($publicLinkActivity));
-			$template->addBodyListItem($this->l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
+			foreach ($recipients as $userId => $email) {
+				$l10n = $this->recipientL10n->forUser($userId);
+				$subject = $this->getSubject($l10n, $isFolder, $eventName);
+				$description = $this->getDescription($l10n, $publicLinkActivity);
 
-			if ($eventName !== 'deleted') {
-				$template->addBodyButton(
-					$this->l10n->t('Open file'),
-					$this->urlGenerator->linkToRouteAbsolute('files.viewcontroller.showFile', [
-						'dir' => $isFolder ? $path : dirname($path),
-						'fileid' => (string)$node->getId(),
-					]),
-				);
-			}
-			$template->addFooter();
-			$message->setBody($template->renderText(), 'text/plain');
-			$message->setHtmlBody($template->renderHtml());
+				$message = $this->mailer->createMessage();
+				$message->setSubject($subject);
+				$template = $this->mailer->createEMailTemplate('abonnieren_file_event');
+				$template->setSubject($subject);
+				$template->addHeader();
+				$template->addHeading($subject);
+				$template->addBodyText($description);
+				$template->addBodyListItem($l10n->t('Name:') . ' ' . $node->getName());
+				$template->addBodyListItem($l10n->t('Path:') . ' ' . dirname($path));
+				$template->addBodyListItem($l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
+				$template->addBodyListItem($l10n->t('Type:') . ' ' . ($node instanceof File ? $node->getMimeType() : $l10n->t('Folder')));
+				$template->addBodyListItem($l10n->t('Changed by:') . ' ' . $this->getActorDisplayName($l10n, $publicLinkActivity));
+				$template->addBodyListItem($l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
 
-			foreach ($recipients as $recipient) {
-				$message->setTo([$recipient]);
+				if ($eventName !== 'deleted') {
+					$template->addBodyButton(
+						$l10n->t('Open file'),
+						$this->urlGenerator->linkToRouteAbsolute('files.viewcontroller.showFile', [
+							'dir' => $isFolder ? $path : dirname($path),
+							'fileid' => (string)$node->getId(),
+						]),
+					);
+				}
+				$template->addFooter();
+				$message->setBody($template->renderText(), 'text/plain');
+				$message->setHtmlBody($template->renderHtml());
+				$message->setTo([$email]);
 				$this->mailer->send($message);
 			}
 		} catch (\Throwable $e) {
@@ -180,18 +166,18 @@ class FileUploadListener implements IEventListener {
 		}
 	}
 
-	private function getSubject(bool $isFolder, string $eventName): string {
+	private function getSubject(IL10N $l10n, bool $isFolder, string $eventName): string {
 		return match ($eventName) {
-			'created' => $this->l10n->t($isFolder ? 'Folder created' : 'File uploaded'),
-			'deleted' => $this->l10n->t($isFolder ? 'Folder deleted' : 'File deleted'),
-			default => $this->l10n->t($isFolder ? 'Folder modified' : 'File modified'),
+			'created' => $l10n->t($isFolder ? 'Folder created' : 'File uploaded'),
+			'deleted' => $l10n->t($isFolder ? 'Folder deleted' : 'File deleted'),
+			default => $l10n->t($isFolder ? 'Folder modified' : 'File modified'),
 		};
 	}
 
-	private function getDescription(bool $publicLinkActivity): string {
+	private function getDescription(IL10N $l10n, bool $publicLinkActivity): string {
 		return $publicLinkActivity
-			? $this->l10n->t('The event occurred through a public share link.')
-			: $this->l10n->t('The event occurred within the scope of a subscription.');
+			? $l10n->t('The event occurred through a public share link.')
+			: $l10n->t('The event occurred within the scope of a subscription.');
 	}
 
 	private function getUserRelativePath(Node $node): string {
@@ -199,12 +185,29 @@ class FileUploadListener implements IEventListener {
 		return '/' . implode('/', array_slice($parts, 2));
 	}
 
-	private function getActorDisplayName(bool $publicLinkActivity): string {
+	private function getActorDisplayName(IL10N $l10n, bool $publicLinkActivity): string {
 		$user = $this->userSession->getUser();
 		if ($user !== null) {
 			return $user->getDisplayName();
 		}
-		return $publicLinkActivity ? $this->l10n->t('Anonymous visitor') : $this->l10n->t('Unknown');
+		return $publicLinkActivity ? $l10n->t('Anonymous visitor') : $l10n->t('Unknown');
+	}
+
+	/** Editors such as ONLYOFFICE may set OC_User without a full IUserSession. */
+	private function resolveActorUserId(): ?string {
+		if (!class_exists(\OC_User::class)) {
+			return null;
+		}
+		$uid = \OC_User::getUser();
+		return is_string($uid) && $uid !== '' ? $uid : null;
+	}
+
+	private function isInternalSystemPath(Node $node): bool {
+		$path = $node->getPath();
+		return str_contains($path, '/appdata_')
+			|| str_contains($path, '/files_trashbin/')
+			|| str_contains($path, '/files_versions/')
+			|| str_contains($path, '/thumbnails/');
 	}
 
 	private function formatSize(int|float $bytes): string {

@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.1.2 - 2026-09-22
+
+### Changed
+
+- Write an Activity entry (bell icon) for every subscription email — opens,
+  downloads, uploads, modifications and deletions, including public-link
+  events — to each subscriber who was emailed.
+
+## 1.1.1 - 2026-09-22
+
+### Fixed
+
+- Fix invalid public-share URL regexes that aborted share resolution with
+  `preg_match(): Unknown modifier ']'` and prevented notification emails.
+- Notify on any real filesystem open/write (Files, shares, Text, Collabora,
+  ONLYOFFICE, desktop clients, …) instead of an app URL allowlist. Only probes,
+  tiny previews and internal system paths are ignored.
+
+### Changed
+
+- Download subscriptions now notify when a file is opened or downloaded, for
+  any client that actually reads the file body.
+
+## 1.1.0 - 2026-09-21
+
+### Fixed
+
+- Send modification emails when a file is edited through a public share link
+  (including Nextcloud Text on `/s/…`). File changes stay in the native Files
+  activity feed so they are not listed twice.
+- Resolve public, email and internal shares the same way for download, upload,
+  modification and deletion, including public DAV paths that are not mounted as
+  shared storage.
+- Translate notification emails into each subscriber's profile language instead
+  of the language of the request that triggered the event. Fall back from
+  regional codes such as de_DE to de so internal-share mails do not switch to
+  the actor's language.
+
+### Changed
+
+- Debounce all notification categories (download, upload, modification,
+  deletion) for 10 minutes per actor and file.
+
 ## 1.0.6 - 2026-09-21
 
 ### Changed
