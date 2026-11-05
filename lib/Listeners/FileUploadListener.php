@@ -7,7 +7,11 @@ namespace OCA\Abonnieren\Listeners;
 use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Activity\Provider;
 use OCA\Abonnieren\Service\RecipientL10N;
+use OCA\Abonnieren\Service\RecipientMailDispatcher;
+use OCA\Abonnieren\Service\MailOutbox;
+use OCA\Abonnieren\Notification\NotificationPublisher;
 use OCA\Abonnieren\Service\ShareContextResolver;
+use OCA\Abonnieren\Service\RecipientVisiblePath;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
 use OCP\EventDispatcher\Event;
@@ -29,8 +33,11 @@ use Psr\Log\LoggerInterface;
 /** @template-implements IEventListener<NodeCreatedEvent|NodeDeletedEvent|NodeWrittenEvent|Event> */
 class FileUploadListener implements IEventListener {
 	private ICache $cache;
+	/** @var array<int,true> Created nodes awaiting their paired write event. */
+	private array $newNodes = [];
 
 	public function __construct(
+		private MailOutbox $outbox,
 		private IMailer $mailer,
 		private RecipientL10N $recipientL10n,
 		private LoggerInterface $logger,
@@ -40,6 +47,9 @@ class FileUploadListener implements IEventListener {
 		private IUserSession $userSession,
 		private ShareContextResolver $shareResolver,
 		private ActivityPublisher $activityPublisher,
+		private NotificationPublisher $nativePublisher,
+		private RecipientVisiblePath $recipientVisiblePath,
+		private RecipientMailDispatcher $mailDispatcher,
 	) {
 		$this->cache = $cacheFactory->createDistributed('abonnieren_event_debounce');
 	}
@@ -60,6 +70,15 @@ class FileUploadListener implements IEventListener {
 			return;
 		}
 		if (str_ends_with($node->getName(), '.part') || $this->isInternalSystemPath($node)) {
+			return;
+		}
+		$nodeId = (int)$node->getId();
+		if ($event instanceof NodeCreatedEvent) {
+			$this->newNodes[$nodeId] = true;
+		} elseif ($event instanceof NodeWrittenEvent && isset($this->newNodes[$nodeId])) {
+			// Nextcloud emits a write event while finalizing a newly created file.
+			// Treat that pair as one upload, not an upload plus modification.
+			unset($this->newNodes[$nodeId]);
 			return;
 		}
 
@@ -84,32 +103,57 @@ class FileUploadListener implements IEventListener {
 			'deleted' => 'deletion',
 			default => 'modification',
 		};
-		$cacheKey = implode(':', [$category, (string)$node->getId(), $actorKey]);
-		if ($this->cache->get($cacheKey) === true) {
-			return;
-		}
-		$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
+		$cacheKeyBase = implode(':', [$category, (string)$node->getId(), $actorKey]);
 
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
-		$recipients = $this->subscriptionService->getRecipientEmailsForNode(
+		$policies = $this->subscriptionService->getRecipientPoliciesForNode(
 			$subscriptionNode,
 			$eventBit,
 			$actorUserId,
 		);
-		if ($recipients !== []) {
-			$this->sendNotification($subscriptionNode, $recipients, $eventName, $isPublicLink);
-			$activitySubject = match ($eventName) {
-				'created' => Provider::SUBJECT_CREATED,
-				'deleted' => Provider::SUBJECT_DELETED,
-				default => Provider::SUBJECT_MODIFIED,
-			};
-			$this->activityPublisher->publishForRecipients(
-				$activitySubject,
-				$subscriptionNode,
-				$actorUserId,
-				array_keys($recipients),
-			);
+		$emailRecipients = [];
+		$nativeRecipients = [];
+		foreach ($policies as $userId => $policy) {
+			$seconds = $policy['debounceSeconds'];
+			if (($policy['channelMask'] & SubscriptionService::CHANNEL_EMAIL) !== 0
+				&& $policy['email'] !== ''
+				&& ($seconds === 0 || $this->cache->get($cacheKeyBase . ':' . $userId . ':email') !== true)) {
+				$emailRecipients[$userId] = $policy['email'];
+			}
+			if (($policy['channelMask'] & SubscriptionService::CHANNEL_NOTIFICATION) !== 0
+				&& ($seconds === 0 || $this->cache->get($cacheKeyBase . ':' . $userId . ':native') !== true)) {
+				$nativeRecipients[] = $userId;
+			}
 		}
+
+		// A failing SMTP enqueue never prevents an independent native notification.
+		$nativeSent = $this->nativePublisher->publishForRecipients($subscriptionNode, $eventBit, $nativeRecipients);
+		$emailQueued = $emailRecipients !== []
+			? $this->queueNotification($subscriptionNode, $emailRecipients, $eventName, $eventBit, $actorUserId, $isPublicLink, $policies)
+			: [];
+		foreach ($emailQueued as $userId) {
+			$seconds = $policies[$userId]['debounceSeconds'];
+			if ($seconds > 0) {
+				$this->cache->set($cacheKeyBase . ':' . $userId . ':email', true, $seconds);
+			}
+		}
+		foreach ($nativeSent as $userId) {
+			$seconds = $policies[$userId]['debounceSeconds'];
+			if ($seconds > 0) {
+				$this->cache->set($cacheKeyBase . ':' . $userId . ':native', true, $seconds);
+			}
+		}
+		$activitySubject = match ($eventName) {
+			'created' => Provider::SUBJECT_CREATED,
+			'deleted' => Provider::SUBJECT_DELETED,
+			default => Provider::SUBJECT_MODIFIED,
+		};
+		$this->activityPublisher->publishForRecipients(
+			$activitySubject,
+			$subscriptionNode,
+			$actorUserId,
+			array_values(array_unique([...$emailQueued, ...$nativeSent])),
+		);
 
 		if ($event instanceof NodeDeletedEvent) {
 			$this->subscriptionService->deleteRulesForNode((int)$node->getId());
@@ -117,52 +161,59 @@ class FileUploadListener implements IEventListener {
 	}
 
 	/** @param array<string, string> $recipients */
-	private function sendNotification(Node $node, array $recipients, string $eventName, bool $publicLinkActivity): void {
+	/** @return list<string> User IDs whose notification was persisted. */
+	private function queueNotification(Node $node, array $recipients, string $eventName, int $eventBit, ?string $actorUserId, bool $publicLinkActivity, array $policies): array {
 		try {
 			$isFolder = $node instanceof Folder;
-			$path = $this->getUserRelativePath($node);
 
-			foreach ($recipients as $userId => $email) {
-				$l10n = $this->recipientL10n->forUser($userId);
-				$subject = $this->getSubject($l10n, $isFolder, $eventName);
-				$description = $this->getDescription($l10n, $publicLinkActivity);
 
-				$message = $this->mailer->createMessage();
-				$message->setSubject($subject);
-				$template = $this->mailer->createEMailTemplate('abonnieren_file_event');
-				$template->setSubject($subject);
-				$template->addHeader();
-				$template->addHeading($subject);
-				$template->addBodyText($description);
-				$template->addBodyListItem($l10n->t('Name:') . ' ' . $node->getName());
-				$template->addBodyListItem($l10n->t('Path:') . ' ' . dirname($path));
-				$template->addBodyListItem($l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
-				$template->addBodyListItem($l10n->t('Type:') . ' ' . ($node instanceof File ? $node->getMimeType() : $l10n->t('Folder')));
-				$template->addBodyListItem($l10n->t('Changed by:') . ' ' . $this->getActorDisplayName($l10n, $publicLinkActivity));
-				$template->addBodyListItem($l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
+			$queuedUserIds = $this->mailDispatcher->deliver(
+				$recipients,
+				function (string $userId, string $email) use ($node, $eventName, $eventBit, $actorUserId, $isFolder, $publicLinkActivity, $policies): void {
+					$l10n = $this->recipientL10n->forUser($userId);
+					$subject = $this->getSubject($l10n, $isFolder, $eventName);
+					$description = $this->getDescription($l10n, $publicLinkActivity);
 
-				if ($eventName !== 'deleted') {
-					$template->addBodyButton(
-						$l10n->t('Open file'),
-						$this->urlGenerator->linkToRouteAbsolute('files.viewcontroller.showFile', [
-							'dir' => $isFolder ? $path : dirname($path),
-							'fileid' => (string)$node->getId(),
-						]),
-					);
-				}
-				$template->addFooter();
-				$message->setBody($template->renderText(), 'text/plain');
-				$message->setHtmlBody($template->renderHtml());
-				$message->setTo([$email]);
-				$this->mailer->send($message);
-			}
+					$recipientPath = $this->recipientVisiblePath->pathFor($userId, $node, $eventName === 'deleted');
+					$template = $this->mailer->createEMailTemplate('abonnieren_file_event');
+					$template->setSubject($subject);
+					$template->addHeader();
+					$template->addHeading($subject);
+					$template->addBodyText($description);
+					$template->addBodyListItem($l10n->t('Name:') . ' ' . $node->getName());
+					if ($recipientPath !== null) {
+						$template->addBodyListItem($l10n->t('Path:') . ' ' . dirname($recipientPath));
+					}
+					$template->addBodyListItem($l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
+					$template->addBodyListItem($l10n->t('Type:') . ' ' . ($node instanceof File ? $node->getMimeType() : $l10n->t('Folder')));
+					$template->addBodyListItem($l10n->t('Changed by:') . ' ' . $this->getActorDisplayName($l10n, $publicLinkActivity));
+					$template->addBodyListItem($l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
+
+					if ($eventName !== 'deleted' && $recipientPath !== null) {
+						$template->addBodyButton(
+							$l10n->t('Open file'),
+							$this->urlGenerator->linkToRouteAbsolute('files.viewcontroller.showFile', [
+								'dir' => $isFolder ? $recipientPath : dirname($recipientPath),
+								'fileid' => (string)$node->getId(),
+							]),
+						);
+					}
+					$template->addFooter();
+					$this->outbox->enqueue($userId, $node, $eventBit, $actorUserId, $eventName === 'deleted',
+						$subject, $template->renderText(), $template->renderHtml(), $policies[$userId]);
+				},
+				'Could not queue file event notification',
+				['nodeId' => (int)$node->getId(), 'event' => $eventName],
+			);
+			return $queuedUserIds;
 		} catch (\Throwable $e) {
-			$this->logger->error('Could not send file event notification', [
+			$this->logger->error('Could not queue file event notification', [
 				'app' => 'abonnieren',
 				'nodeId' => (int)$node->getId(),
 				'event' => $eventName,
 				'exception' => $e,
 			]);
+			return [];
 		}
 	}
 
@@ -180,10 +231,6 @@ class FileUploadListener implements IEventListener {
 			: $l10n->t('The event occurred within the scope of a subscription.');
 	}
 
-	private function getUserRelativePath(Node $node): string {
-		$parts = explode('/', trim($node->getPath(), '/'));
-		return '/' . implode('/', array_slice($parts, 2));
-	}
 
 	private function getActorDisplayName(IL10N $l10n, bool $publicLinkActivity): string {
 		$user = $this->userSession->getUser();
